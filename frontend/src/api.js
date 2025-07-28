@@ -33,10 +33,14 @@ export async function fetchCustomerTypeCS(params) {
   return apiCall('/customer-type-cs', params);
 }
 
-// 워드클라우드 이미지 URL 생성
-export function getWordCloudUrl(params) {
-  const qs = new URLSearchParams(params).toString();
-  return `${API_BASE}/wordcloud?${qs}`;
+// CSAT 분석 데이터 조회
+export async function fetchCsatAnalysis(params) {
+  return apiCall('/csat-analysis', params);
+}
+
+// 워드클라우드 데이터 조회
+export async function fetchWordCloudData(params) {
+  return apiCall('/wordcloud', params);
 }
 
 // 통계 데이터 조회
@@ -47,6 +51,20 @@ export async function fetchStatistics(start, end) {
 // 샘플 데이터 조회
 export async function fetchSample(start, end, n = 5) {
   return apiCall('/sample', { start, end, n });
+}
+
+// 사용자 이벤트 분석
+export async function fetchUserEventsAnalysis(userIds, since = null) {
+  const params = { user_ids: userIds };
+  if (since) params.since = since;
+  return apiCall('/user-events', params);
+}
+
+// 단일 사용자 이벤트 조회
+export async function fetchUserEvents(userId, since = null, limit = 25) {
+  const params = { limit };
+  if (since) params.since = since;
+  return apiCall(`/user-events/${userId}`, params);
 }
 
 // API 상태 확인

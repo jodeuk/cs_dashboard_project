@@ -6,10 +6,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 import pandas as pd
 from datetime import datetime
-from konlpy.tag import Okt
-from wordcloud import WordCloud
-import matplotlib.pyplot as plt
-from .cs_utils import get_cached_data, get_filtered_df, channel_api
+# from konlpy.tag import Okt  # 임시 제거
+# from wordcloud import WordCloud  # 임시 제거
+# import matplotlib.pyplot as plt  # 임시 제거
+from .cs_utils import get_cached_data, get_filtered_df, channel_api, get_events_analysis
 
 # ---- 1. FastAPI 기본 셋업 ----
 app = FastAPI(title="CS Dashboard API", version="1.0.0")
@@ -23,7 +23,7 @@ app.add_middleware(
 
 # ---- 2. 설정 ----
 FONT_PATH = os.environ.get("FONT_PATH", "/usr/share/fonts/truetype/nanum/NanumGothic.ttf")
-okt = Okt()
+# okt = Okt()  # 임시 제거
 
 # ---- 3. Stopwords/필터 ----
 stopwords = [
@@ -47,7 +47,9 @@ def filter_chats(chat_list):
     return cleaned
 
 def extract_keywords(text):
-    return [word for word in okt.nouns(text) if len(word) > 1]
+    # 임시로 간단한 키워드 추출 (KoNLPy 대신)
+    words = text.split()
+    return [word for word in words if len(word) > 1 and word.isalpha()]
 
 # ---- 4. API 엔드포인트 ----
 
@@ -171,9 +173,9 @@ async def customer_type_cs(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"고객유형별 문의량 조회 실패: {str(e)}")
 
-# 4-5. 워드클라우드
-@app.get("/api/wordcloud")
-async def get_wordcloud(
+# 4-5. CSAT 분석
+@app.get("/api/csat-analysis")
+async def csat_analysis(
     start: str = Query(...), end: str = Query(...),
     고객유형: str = Query("전체"),
     문의유형: str = Query("전체"),
@@ -182,30 +184,66 @@ async def get_wordcloud(
     try:
         df = await get_cached_data(start, end)
         temp = get_filtered_df(df, start, end, 고객유형, 문의유형, 서비스유형)
+        
+        # CSAT 데이터가 있는 경우에만 처리
+        csat_columns = [col for col in temp.columns if col.startswith('A-')]
+        
+        if not csat_columns:
+            return {
+                "평균점수": [],
+                "월별트렌드": {},
+                "문항목록": []
+            }
+        
+        # CSAT 평균 점수
+        csat_avg = temp[csat_columns].mean().reset_index()
+        csat_avg.columns = ["문항", "평균점수"]
+        
+        # 월별 CSAT 트렌드
+        temp["month"] = pd.to_datetime(temp["firstAskedAt"]).dt.to_period('M').astype(str)
+        trend_data = {}
+        for col in csat_columns:
+            trend_df = temp.groupby("month")[col].mean().reset_index()
+            trend_df["월"] = trend_df["month"].apply(lambda x: str(x)[-2:])
+            trend_data[col] = trend_df[["월", col]].to_dict(orient="records")
+        
+        return {
+            "평균점수": csat_avg.to_dict(orient="records"),
+            "월별트렌드": trend_data,
+            "문항목록": csat_columns
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"CSAT 분석 실패: {str(e)}")
+
+# 4-6. 워드클라우드 (임시 비활성화)
+@app.get("/api/wordcloud")
+async def get_wordcloud(
+    start: str = Query(...), end: str = Query(...),
+    고객유형: str = Query("전체"),
+    문의유형: str = Query("전체"),
+    서비스유형: str = Query("전체")
+):
+    # 임시로 텍스트 기반 키워드 반환
+    try:
+        df = await get_cached_data(start, end)
+        temp = get_filtered_df(df, start, end, 고객유형, 문의유형, 서비스유형)
         temp["filtered_chats"] = temp["chats"].apply(filter_chats)
         texts = temp["filtered_chats"].dropna().apply(lambda x: " ".join(x)).astype(str)
         keyword_list = extract_keywords(" ".join(texts))
-        keyword_str = " ".join(keyword_list)
         
-        wc = WordCloud(
-            font_path=FONT_PATH,
-            width=800, height=400, background_color="white"
-        ).generate(keyword_str)
+        # 상위 20개 키워드 반환
+        from collections import Counter
+        keyword_counts = Counter(keyword_list)
+        top_keywords = keyword_counts.most_common(20)
         
-        buf = io.BytesIO()
-        plt.figure(figsize=(10, 5))
-        plt.imshow(wc, interpolation="bilinear")
-        plt.axis("off")
-        plt.tight_layout()
-        plt.savefig(buf, format="png")
-        plt.close()
-        buf.seek(0)
-        
-        return FileResponse(buf, media_type="image/png")
+        return {
+            "keywords": [{"word": word, "count": count} for word, count in top_keywords],
+            "message": "워드클라우드 이미지는 임시로 비활성화되었습니다."
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"워드클라우드 생성 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"키워드 분석 실패: {str(e)}")
 
-# 4-6. 데이터 통계
+# 4-7. 데이터 통계
 @app.get("/api/statistics")
 async def get_statistics(start: str = Query(...), end: str = Query(...)):
     try:
@@ -220,11 +258,44 @@ async def get_statistics(start: str = Query(...), end: str = Query(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"통계 조회 실패: {str(e)}")
 
-# 4-7. 원본 데이터 일부 확인
+# 4-8. 원본 데이터 일부 확인
 @app.get("/api/sample")
 async def sample(start: str = Query(...), end: str = Query(...), n: int = 5):
     try:
         df = await get_cached_data(start, end)
         return df.sample(min(n, len(df))).to_dict(orient="records")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"샘플 데이터 조회 실패: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"샘플 데이터 조회 실패: {str(e)}")
+
+# 4-9. 사용자 이벤트 분석
+@app.get("/api/user-events")
+async def user_events_analysis(
+    user_ids: str = Query(...),  # 쉼표로 구분된 사용자 ID들
+    since: Optional[int] = Query(None)  # Unix timestamp (microseconds)
+):
+    try:
+        # 쉼표로 구분된 사용자 ID를 리스트로 변환
+        user_id_list = [uid.strip() for uid in user_ids.split(",") if uid.strip()]
+        
+        if not user_id_list:
+            raise HTTPException(status_code=400, detail="사용자 ID가 필요합니다.")
+        
+        # 이벤트 분석 수행
+        analysis_result = await get_events_analysis(user_id_list, since)
+        
+        return analysis_result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"이벤트 분석 실패: {str(e)}")
+
+# 4-10. 단일 사용자 이벤트 조회
+@app.get("/api/user-events/{user_id}")
+async def get_user_events(
+    user_id: str,
+    since: Optional[int] = Query(None),
+    limit: int = Query(25)
+):
+    try:
+        events = await channel_api.get_user_events(user_id, since, limit)
+        return events
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"사용자 이벤트 조회 실패: {str(e)}") 

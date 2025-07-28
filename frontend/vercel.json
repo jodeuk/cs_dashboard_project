@@ -1,0 +1,14 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "build",
+  "framework": "create-react-app",
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "https://cs-dashboard-project.onrender.com/api/$1"
+    }
+  ],
+  "env": {
+    "REACT_APP_API_BASE": "https://cs-dashboard-project.onrender.com/api"
+  }
+} 

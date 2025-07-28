@@ -1,8 +1,5 @@
 fastapi
 uvicorn
 pandas
-matplotlib
-wordcloud
-konlpy
 httpx
 python-dotenv 
