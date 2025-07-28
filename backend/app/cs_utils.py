@@ -22,7 +22,7 @@ class ChannelTalkAPI:
         if not self.access_key:
             raise ValueError("CHANNEL_ACCESS_TOKEN 환경변수가 설정되지 않았습니다.")
         
-        url = f"{self.base_url}/openapi/v3/userchats"
+        url = f"{self.base_url}/openapi/v5/userchats"
         params = {
             "startDate": start_date,
             "endDate": end_date,
