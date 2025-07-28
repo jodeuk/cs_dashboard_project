@@ -1,11 +1,14 @@
 import os
+import io
 import re
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 import pandas as pd
 from datetime import datetime
-from typing import Optional
+# from konlpy.tag import Okt  # 임시 제거
+# from wordcloud import WordCloud  # 임시 제거
+# import matplotlib.pyplot as plt  # 임시 제거
 from .cs_utils import get_cached_data, get_filtered_df, channel_api, get_events_analysis
 
 # ---- 1. FastAPI 기본 셋업 ----
@@ -20,6 +23,7 @@ app.add_middleware(
 
 # ---- 2. 설정 ----
 FONT_PATH = os.environ.get("FONT_PATH", "/usr/share/fonts/truetype/nanum/NanumGothic.ttf")
+# okt = Okt()  # 임시 제거
 
 # ---- 3. Stopwords/필터 ----
 stopwords = [
@@ -43,7 +47,7 @@ def filter_chats(chat_list):
     return cleaned
 
 def extract_keywords(text):
-    # 간단한 키워드 추출 (KoNLPy 대신)
+    # 임시로 간단한 키워드 추출 (KoNLPy 대신)
     words = text.split()
     return [word for word in words if len(word) > 1 and word.isalpha()]
 
@@ -124,12 +128,18 @@ async def avg_times(
         
         df = await get_cached_data(start, end)
         temp = get_filtered_df(df, start, end, 고객유형, 문의유형, 서비스유형)
+        temp = temp.copy()
+        temp["month"] = pd.to_datetime(temp["firstAskedAt"]).dt.to_period('M').astype(str)
         
-        result = {}
-        for key, label in time_keys:
-            if key in temp.columns:
-                avg_time = temp[key].mean()
-                result[label] = avg_time if pd.notna(avg_time) else 0
+        result = {"월": [], "첫응답시간": [], "평균응답시간": [], "총응답시간": [], "해결시간": []}
+        months = sorted(temp["month"].dropna().unique())
+        
+        for m in months:
+            result["월"].append(m[-2:])
+            for key, label in time_keys:
+                s = temp[temp["month"] == m][key].dropna().map(channel_api.hms_to_seconds)
+                avg_min = (s.mean() / 60) if not s.empty else None
+                result[label].append(round(avg_min, 2) if avg_min else None)
         
         return result
     except Exception as e:
@@ -143,15 +153,21 @@ async def customer_type_cs(
 ):
     try:
         df = await get_cached_data(start, end)
-        temp = df[(df['firstAskedAt'] >= start) & (df['firstAskedAt'] <= end)]
+        temp = get_filtered_df(df, start, end)
+        counts = temp["고객유형"].value_counts().dropna()
         
-        customer_counts = temp["고객유형"].value_counts().head(top_n)
+        if len(counts) > top_n:
+            top = counts.iloc[:top_n]
+            others = counts.iloc[top_n:].sum()
+            plot_counts = pd.concat([top, pd.Series({"기타": others})])
+        else:
+            plot_counts = counts
+        
+        total = plot_counts.sum()
         data = []
-        for customer_type, count in customer_counts.items():
-            data.append({
-                "고객유형": customer_type,
-                "문의량": int(count)
-            })
+        for k, v in plot_counts.items():
+            percent = v / total * 100 if total else 0
+            data.append({"고객유형": k, "문의량": int(v), "비율": round(percent, 1)})
         
         return data
     except Exception as e:
@@ -199,7 +215,7 @@ async def csat_analysis(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"CSAT 분석 실패: {str(e)}")
 
-# 4-6. 워드클라우드 (키워드 분석)
+# 4-6. 워드클라우드 (임시 비활성화)
 @app.get("/api/wordcloud")
 async def get_wordcloud(
     start: str = Query(...), end: str = Query(...),
@@ -207,6 +223,7 @@ async def get_wordcloud(
     문의유형: str = Query("전체"),
     서비스유형: str = Query("전체")
 ):
+    # 임시로 텍스트 기반 키워드 반환
     try:
         df = await get_cached_data(start, end)
         temp = get_filtered_df(df, start, end, 고객유형, 문의유형, 서비스유형)
@@ -231,15 +248,12 @@ async def get_wordcloud(
 async def get_statistics(start: str = Query(...), end: str = Query(...)):
     try:
         df = await get_cached_data(start, end)
-        temp = df[(df['firstAskedAt'] >= start) & (df['firstAskedAt'] <= end)]
-        
         return {
-            "총문의수": len(temp),
-            "고객유형수": temp["고객유형"].nunique(),
-            "문의유형수": temp["문의유형"].nunique(),
-            "서비스유형수": temp["서비스유형"].nunique(),
-            "평균첫응답시간": temp["operationWaitingTime"].mean() if "operationWaitingTime" in temp.columns else 0,
-            "평균응답시간": temp["operationAvgReplyTime"].mean() if "operationAvgReplyTime" in temp.columns else 0
+            "총문의수": len(df),
+            "기간": f"{start} ~ {end}",
+            "고객유형수": df["고객유형"].nunique(),
+            "문의유형수": df["문의유형"].nunique(),
+            "서비스유형수": df["서비스유형"].nunique()
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"통계 조회 실패: {str(e)}")
