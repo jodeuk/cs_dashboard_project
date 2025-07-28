@@ -1,2 +1,8 @@
 fastapi
-uvicorn 
+uvicorn
+pandas
+matplotlib
+wordcloud
+konlpy
+httpx
+python-dotenv 
