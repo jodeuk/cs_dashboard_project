@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: cs-dashboard-frontend
+    env: static
+    buildCommand: npm install && CI=false npm run build
+    staticPublishPath: ./build
+    envVars:
+      - key: REACT_APP_API_BASE
+        value: https://cs-dashboard-project.onrender.com/api 
