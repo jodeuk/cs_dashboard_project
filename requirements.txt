@@ -1,0 +1,11 @@
+# CS Dashboard Backend Requirements
+fastapi
+uvicorn
+pandas
+matplotlib
+wordcloud
+konlpy
+python-multipart
+aiofiles
+httpx
+python-dotenv 
