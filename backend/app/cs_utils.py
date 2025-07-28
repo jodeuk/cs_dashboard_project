@@ -86,28 +86,29 @@ class ChannelTalkAPI:
         except:
             return 0
 
-    def extract_level(self, tags: List[str]) -> str:
-        """태그에서 고객 레벨을 추출합니다."""
+    def extract_level(self, tags: List[str], type_name: str, level: int) -> str:
+        """태그에서 특정 타입의 레벨을 추출합니다."""
         if not tags:
-            return "일반"
+            return "기타"
         
-        level_keywords = ["VIP", "골드", "실버", "브론즈"]
         for tag in tags:
-            for keyword in level_keywords:
-                if keyword in tag:
-                    return keyword
-        return "일반"
+            if tag.startswith(f"{type_name}/"):
+                parts = tag.split("/")
+                if len(parts) > level:
+                    return parts[level]
+        return "기타"
 
     async def process_userchat_data(self, data: List[Dict]) -> pd.DataFrame:
         """UserChat 데이터를 처리하여 DataFrame으로 변환합니다."""
         processed_data = []
         
         for item in data:
+            tags = item.get("tags", [])
             processed_item = {
                 "userId": item.get("userId"),
                 "mediumType": item.get("mediumType"),
                 "workflow": item.get("workflow"),
-                "tags": item.get("tags", []),
+                "tags": tags,
                 "chats": item.get("chats", []),
                 "createdAt": item.get("createdAt"),
                 "firstAskedAt": item.get("firstAskedAt"),
@@ -115,11 +116,11 @@ class ChannelTalkAPI:
                 "operationAvgReplyTime": item.get("operationAvgReplyTime"),
                 "operationTotalReplyTime": item.get("operationTotalReplyTime"),
                 "operationResolutionTime": item.get("operationResolutionTime"),
-                "고객유형": self.extract_level(item.get("tags", [])),
-                "문의유형": item.get("workflow", "기타"),
-                "서비스유형": item.get("mediumType", "기타"),
-                "문의유형_2차": "기타",  # 나중에 확장 가능
-                "서비스유형_2차": "기타"   # 나중에 확장 가능
+                "서비스유형": self.extract_level(tags, "서비스유형", 1),
+                "서비스유형_2차": self.extract_level(tags, "서비스유형", 2),
+                "고객유형": self.extract_level(tags, "고객유형", 1),
+                "문의유형": self.extract_level(tags, "문의유형", 1),
+                "문의유형_2차": self.extract_level(tags, "문의유형", 2),
             }
             processed_data.append(processed_item)
         

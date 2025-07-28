@@ -66,6 +66,17 @@ async def test():
 async def filter_options(start: str = Query(...), end: str = Query(...)):
     try:
         df = await get_cached_data(start, end)
+        
+        # 데이터가 비어있거나 컬럼이 없는 경우 기본값 제공
+        if df.empty or "고객유형" not in df.columns:
+            return {
+                "고객유형": ["전체", "일반", "VIP", "골드", "실버", "브론즈"],
+                "문의유형": ["전체", "기타"],
+                "서비스유형": ["전체", "기타"],
+                "문의유형_2차": ["전체", "기타"],
+                "서비스유형_2차": ["전체", "기타"],
+            }
+        
         return {
             "고객유형": ["전체"] + sorted(df["고객유형"].dropna().unique().tolist()),
             "문의유형": ["전체"] + sorted(df["문의유형"].dropna().unique().tolist()),
@@ -74,7 +85,14 @@ async def filter_options(start: str = Query(...), end: str = Query(...)):
             "서비스유형_2차": ["전체"] + sorted(df["서비스유형_2차"].dropna().unique().tolist()),
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"필터 옵션 조회 실패: {str(e)}")
+        # 오류 발생 시에도 기본값 제공
+        return {
+            "고객유형": ["전체", "일반", "VIP", "골드", "실버", "브론즈"],
+            "문의유형": ["전체", "기타"],
+            "서비스유형": ["전체", "기타"],
+            "문의유형_2차": ["전체", "기타"],
+            "서비스유형_2차": ["전체", "기타"],
+        }
 
 # 4-2. 기간별(월/주) 문의량
 @app.get("/api/period-counts")
