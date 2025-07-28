@@ -1,38 +1,81 @@
-import React from "react";
-import { Line } from "react-chartjs-2";
+import React from 'react';
 
-function ChartSection({ data, label, xLabel, yLabel }) {
-  // data: [{x축, 문의량}], label: "CS 문의량"
-  const chartData = {
-    labels: data.map((d) => d.x축),
-    datasets: [
-      {
-        label: label || "",
-        data: data.map((d) => d.문의량),
-        borderColor: "#36a2eb",
-        backgroundColor: "rgba(54,162,235,0.1)",
-        fill: true,
-        tension: 0.3,
-        pointRadius: 4,
-      },
-    ],
-  };
+const ChartSection = ({ data, label, xLabel, yLabel, loading }) => {
+  if (loading) {
+    return (
+      <div style={{
+        backgroundColor: "#f8f9fa",
+        padding: "20px",
+        borderRadius: "8px",
+        marginBottom: "20px",
+        textAlign: "center"
+      }}>
+        <div>로딩 중...</div>
+      </div>
+    );
+  }
+
+  if (!data || data.length === 0) {
+    return (
+      <div style={{
+        backgroundColor: "#f8f9fa",
+        padding: "20px",
+        borderRadius: "8px",
+        marginBottom: "20px",
+        textAlign: "center",
+        color: "#666"
+      }}>
+        데이터가 없습니다.
+      </div>
+    );
+  }
+
+  const maxValue = Math.max(...data.map(item => item[yLabel] || 0));
+  const maxBarHeight = 200;
+
   return (
-    <div style={{ margin: "24px 0" }}>
-      <Line
-        data={chartData}
-        options={{
-          plugins: {
-            legend: { display: !!label },
-          },
-          scales: {
-            x: { title: { display: true, text: xLabel || "" } },
-            y: { title: { display: true, text: yLabel || "" }, beginAtZero: true },
-          },
-        }}
-      />
+    <div style={{
+      backgroundColor: "white",
+      padding: "20px",
+      borderRadius: "8px",
+      marginBottom: "20px",
+      boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
+    }}>
+      <h3 style={{ marginBottom: "16px", color: "#333" }}>{label}</h3>
+      
+      <div style={{ display: "flex", alignItems: "end", gap: "8px", height: "220px" }}>
+        {data.map((item, index) => {
+          const height = maxValue > 0 ? (item[yLabel] / maxValue) * maxBarHeight : 0;
+          return (
+            <div key={index} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center" }}>
+              <div style={{
+                backgroundColor: "#007bff",
+                width: "100%",
+                height: `${height}px`,
+                borderRadius: "4px 4px 0 0",
+                marginBottom: "8px",
+                minHeight: "4px"
+              }} />
+              <div style={{
+                fontSize: "12px",
+                color: "#666",
+                textAlign: "center"
+              }}>
+                {item[xLabel]}
+              </div>
+              <div style={{
+                fontSize: "10px",
+                color: "#999",
+                textAlign: "center"
+              }}>
+                {item[yLabel]}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
-}
+};
 
-export default ChartSection;
+export default ChartSection; 

@@ -1,10 +1,10 @@
-const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:8000/api";
+const API_BASE = process.env.REACT_APP_API_BASE || "https://cs-dashboard-project.onrender.com/api";
 
 // 기본 API 호출 함수
 async function apiCall(endpoint, params = {}) {
   const qs = new URLSearchParams(params).toString();
   const url = `${API_BASE}${endpoint}${qs ? `?${qs}` : ''}`;
-  
+
   const response = await fetch(url);
   if (!response.ok) {
     const error = await response.json();
@@ -33,15 +33,14 @@ export async function fetchCustomerTypeCS(params) {
   return apiCall('/customer-type-cs', params);
 }
 
-// 워드클라우드 이미지 URL 생성
-export function getWordCloudUrl(params) {
-  const qs = new URLSearchParams(params).toString();
-  return `${API_BASE}/wordcloud?${qs}`;
-}
-
 // CSAT 분석 데이터 조회
 export async function fetchCsatAnalysis(params) {
   return apiCall('/csat-analysis', params);
+}
+
+// 워드클라우드 데이터 조회
+export async function fetchWordCloudData(params) {
+  return apiCall('/wordcloud', params);
 }
 
 // 통계 데이터 조회
@@ -54,6 +53,20 @@ export async function fetchSample(start, end, n = 5) {
   return apiCall('/sample', { start, end, n });
 }
 
+// 사용자 이벤트 분석
+export async function fetchUserEventsAnalysis(userIds, since = null) {
+  const params = { user_ids: userIds };
+  if (since) params.since = since;
+  return apiCall('/user-events', params);
+}
+
+// 단일 사용자 이벤트 조회
+export async function fetchUserEvents(userId, since = null, limit = 25) {
+  const params = { limit };
+  if (since) params.since = since;
+  return apiCall(`/user-events/${userId}`, params);
+}
+
 // API 상태 확인
 export async function checkApiHealth() {
   try {
@@ -62,4 +75,4 @@ export async function checkApiHealth() {
   } catch (error) {
     return false;
   }
-}
+} 

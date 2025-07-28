@@ -16,104 +16,111 @@ class ChannelTalkAPI:
             "Authorization": f"Bearer {self.access_key}",
             "Content-Type": "application/json"
         }
-    
+
     async def get_userchats(self, start_date: str, end_date: str, limit: int = 100) -> List[Dict]:
         """Channel Talk API에서 UserChat 데이터를 가져옵니다."""
         if not self.access_key:
             raise ValueError("CHANNEL_ACCESS_TOKEN 환경변수가 설정되지 않았습니다.")
         
-        all_userchats = []
-        next_key = None
+        url = f"{self.base_url}/openapi/v3/userchats"
+        params = {
+            "startDate": start_date,
+            "endDate": end_date,
+            "limit": limit
+        }
         
         async with httpx.AsyncClient() as client:
-            while True:
-                params = {
-                    "limit": limit,
-                    "startDate": start_date,
-                    "endDate": end_date
-                }
-                if next_key:
-                    params["nextKey"] = next_key
-                
-                response = await client.get(
-                    f"{self.base_url}/openapi/v1/userchats",
-                    headers=self.headers,
-                    params=params
-                )
-                
-                if response.status_code != 200:
-                    raise Exception(f"API 호출 실패: {response.status_code} - {response.text}")
-                
-                data = response.json()
-                userchats = data.get("userchats", [])
-                all_userchats.extend(userchats)
-                
-                # 다음 페이지가 있는지 확인
-                next_key = data.get("nextKey")
-                if not next_key:
-                    break
+            response = await client.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+            return response.json()
+
+    async def get_user_events(self, user_id: str, since: Optional[int] = None, limit: int = 25) -> Dict:
+        """Channel Talk API에서 사용자 이벤트 데이터를 가져옵니다."""
+        if not self.access_key:
+            raise ValueError("CHANNEL_ACCESS_TOKEN 환경변수가 설정되지 않았습니다.")
         
-        return all_userchats
-    
-    def extract_level(self, tags: List[str], type_name: str, level: int) -> Optional[str]:
-        """태그에서 특정 레벨의 값을 추출합니다."""
-        if not tags:
-            return None
-        for tag in tags:
-            if tag.startswith(f"{type_name}/"):
-                parts = tag.split("/")
-                if len(parts) > level:
-                    return parts[level]
-        return None
-    
-    def hms_to_seconds(self, hms_str: str) -> Optional[int]:
-        """HH:MM:SS 형식의 시간을 초로 변환합니다."""
-        if not hms_str or pd.isna(hms_str):
-            return None
+        url = f"{self.base_url}/open/v5/users/{user_id}/events"
+        params = {
+            "sortOrder": "desc",
+            "limit": limit
+        }
+        
+        if since:
+            params["since"] = since
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+            return response.json()
+
+    async def get_all_user_events(self, user_ids: List[str], since: Optional[int] = None) -> List[Dict]:
+        """여러 사용자의 이벤트 데이터를 병렬로 가져옵니다."""
+        if not self.access_key:
+            raise ValueError("CHANNEL_ACCESS_TOKEN 환경변수가 설정되지 않았습니다.")
+        
+        tasks = []
+        for user_id in user_ids:
+            task = self.get_user_events(user_id, since)
+            tasks.append(task)
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        all_events = []
+        for result in results:
+            if isinstance(result, dict) and "events" in result:
+                all_events.extend(result["events"])
+        
+        return all_events
+
+    def hms_to_seconds(self, time_str: str) -> int:
+        """HH:MM:SS 형식을 초로 변환합니다."""
+        if not time_str or time_str == "00:00:00":
+            return 0
+        
         try:
-            h, m, s = map(int, str(hms_str).split(":"))
-            return h * 3600 + m * 60 + s
+            parts = time_str.split(":")
+            if len(parts) == 3:
+                hours, minutes, seconds = map(int, parts)
+                return hours * 3600 + minutes * 60 + seconds
+            return 0
         except:
-            return None
-    
-    def process_userchat_data(self, userchats: List[Dict]) -> pd.DataFrame:
-        """UserChat 데이터를 DataFrame으로 변환하고 필요한 필드를 추출합니다."""
+            return 0
+
+    def extract_level(self, tags: List[str]) -> str:
+        """태그에서 고객 레벨을 추출합니다."""
+        if not tags:
+            return "일반"
+        
+        level_keywords = ["VIP", "골드", "실버", "브론즈"]
+        for tag in tags:
+            for keyword in level_keywords:
+                if keyword in tag:
+                    return keyword
+        return "일반"
+
+    async def process_userchat_data(self, data: List[Dict]) -> pd.DataFrame:
+        """UserChat 데이터를 처리하여 DataFrame으로 변환합니다."""
         processed_data = []
         
-        for userchat in userchats:
-            # 필요한 필드 추출
+        for item in data:
             processed_item = {
-                "userId": userchat.get("user", {}).get("id"),
-                "mediumType": userchat.get("mediumType"),
-                "workflow": userchat.get("workflow"),
-                "tags": userchat.get("chatTags", []),
-                "chats": userchat.get("messages", []),
-                "createdAt": userchat.get("createdAt"),
-                "firstAskedAt": userchat.get("firstAskedAt"),
-                "operationWaitingTime": userchat.get("operationWaitingTime"),
-                "operationAvgReplyTime": userchat.get("operationAvgReplyTime"),
-                "operationTotalReplyTime": userchat.get("operationTotalReplyTime"),
-                "operationResolutionTime": userchat.get("operationResolutionTime")
+                "userId": item.get("userId"),
+                "mediumType": item.get("mediumType"),
+                "workflow": item.get("workflow"),
+                "tags": item.get("tags", []),
+                "chats": item.get("chats", []),
+                "createdAt": item.get("createdAt"),
+                "firstAskedAt": item.get("firstAskedAt"),
+                "operationWaitingTime": item.get("operationWaitingTime"),
+                "operationAvgReplyTime": item.get("operationAvgReplyTime"),
+                "operationTotalReplyTime": item.get("operationTotalReplyTime"),
+                "operationResolutionTime": item.get("operationResolutionTime"),
+                "고객유형": self.extract_level(item.get("tags", [])),
+                "문의유형": item.get("workflow", "기타"),
+                "서비스유형": item.get("mediumType", "기타"),
+                "문의유형_2차": "기타",  # 나중에 확장 가능
+                "서비스유형_2차": "기타"   # 나중에 확장 가능
             }
-            
-            # 태그에서 계층 구조 추출
-            tags = [tag.get("name") for tag in userchat.get("chatTags", [])]
-            processed_item["서비스유형"] = self.extract_level(tags, "서비스유형", 1)
-            processed_item["서비스유형_2차"] = self.extract_level(tags, "서비스유형", 2)
-            processed_item["고객유형"] = self.extract_level(tags, "고객유형", 1)
-            processed_item["문의유형"] = self.extract_level(tags, "문의유형", 1)
-            processed_item["문의유형_2차"] = self.extract_level(tags, "문의유형", 2)
-            
-            # 날짜 변환
-            if processed_item["firstAskedAt"]:
-                processed_item["firstAskedAt"] = pd.to_datetime(processed_item["firstAskedAt"], unit='ms')
-                processed_item["month"] = processed_item["firstAskedAt"].strftime('%Y-%m')
-            
-            # CSAT 데이터 처리 (있는 경우)
-            if "cs_satisfaction" in userchat and isinstance(userchat["cs_satisfaction"], dict):
-                for k, v in userchat["cs_satisfaction"].items():
-                    processed_item[k] = v
-            
             processed_data.append(processed_item)
         
         return pd.DataFrame(processed_data)
@@ -121,59 +128,32 @@ class ChannelTalkAPI:
 # 전역 API 클라이언트 인스턴스
 channel_api = ChannelTalkAPI()
 
-# 데이터 캐시 (메모리 기반)
+# 전역 데이터 캐시
 _data_cache = {}
-_cache_timestamp = None
-CACHE_DURATION = 300  # 5분
 
 async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
-    """캐시된 데이터를 반환하거나 API에서 새로 가져옵니다."""
-    global _data_cache, _cache_timestamp
-    
+    """캐시된 데이터를 가져오거나 API에서 새로 가져옵니다."""
     cache_key = f"{start_date}_{end_date}"
-    current_time = datetime.now()
     
-    # 캐시가 유효한지 확인
-    if (_cache_timestamp and 
-        (current_time - _cache_timestamp).seconds < CACHE_DURATION and 
-        cache_key in _data_cache):
+    if cache_key in _data_cache:
         return _data_cache[cache_key]
     
-    # API에서 새 데이터 가져오기
     try:
-        userchats = await channel_api.get_userchats(start_date, end_date)
-        df = channel_api.process_userchat_data(userchats)
-        
-        # 캐시 업데이트
+        raw_data = await channel_api.get_userchats(start_date, end_date)
+        df = await channel_api.process_userchat_data(raw_data)
         _data_cache[cache_key] = df
-        _cache_timestamp = current_time
-        
         return df
     except Exception as e:
-        # API 호출 실패 시 캐시된 데이터 반환 (있는 경우)
-        if cache_key in _data_cache:
-            return _data_cache[cache_key]
-        raise e
+        print(f"데이터 로드 실패: {e}")
+        return pd.DataFrame()
 
-def get_filtered_df(
-    df: pd.DataFrame,
-    start: str, 
-    end: str, 
-    고객유형: str = "전체", 
-    문의유형: str = "전체", 
-    서비스유형: str = "전체", 
-    문의유형_2차: str = "전체", 
-    서비스유형_2차: str = "전체"
-) -> pd.DataFrame:
-    """필터 조건에 따라 DataFrame을 필터링합니다."""
+def get_filtered_df(df: pd.DataFrame, start: str, end: str, 
+                   고객유형="전체", 문의유형="전체", 서비스유형="전체", 
+                   문의유형_2차="전체", 서비스유형_2차="전체") -> pd.DataFrame:
+    """필터링된 DataFrame을 반환합니다."""
     temp = df.copy()
+    temp = temp[(temp['firstAskedAt'] >= start) & (temp['firstAskedAt'] <= end)]
     
-    # 날짜 필터링
-    start_dt = pd.to_datetime(start)
-    end_dt = pd.to_datetime(end)
-    temp = temp[(temp['firstAskedAt'] >= start_dt) & (temp['firstAskedAt'] <= end_dt)]
-    
-    # 기타 필터링
     if 고객유형 != "전체": 
         temp = temp[temp["고객유형"] == 고객유형]
     if 문의유형 != "전체": 
@@ -186,3 +166,63 @@ def get_filtered_df(
         temp = temp[temp["서비스유형_2차"] == 서비스유형_2차]
     
     return temp.reset_index(drop=True)
+
+async def process_events_data(events: List[Dict]) -> pd.DataFrame:
+    """이벤트 데이터를 처리하여 DataFrame으로 변환합니다."""
+    processed_events = []
+    
+    for event in events:
+        processed_event = {
+            "userId": event.get("userId"),
+            "eventId": event.get("id"),
+            "channelId": event.get("channelId"),
+            "eventName": event.get("name"),
+            "properties": event.get("property", {}),
+            "createdAt": event.get("createdAt"),
+            "expireAt": event.get("expireAt"),
+            "version": event.get("version")
+        }
+        processed_events.append(processed_event)
+    
+    return pd.DataFrame(processed_events)
+
+async def get_events_analysis(user_ids: List[str], since: Optional[int] = None) -> Dict:
+    """이벤트 데이터 분석을 수행합니다."""
+    try:
+        events = await channel_api.get_all_user_events(user_ids, since)
+        df = await process_events_data(events)
+        
+        if df.empty:
+            return {
+                "total_events": 0,
+                "event_types": [],
+                "top_events": [],
+                "events_by_user": {},
+                "recent_events": []
+            }
+        
+        # 이벤트 타입별 통계
+        event_counts = df["eventName"].value_counts()
+        
+        # 사용자별 이벤트 수
+        user_event_counts = df["userId"].value_counts()
+        
+        # 최근 이벤트 (최대 10개)
+        recent_events = df.sort_values("createdAt", ascending=False).head(10)
+        
+        return {
+            "total_events": len(df),
+            "event_types": event_counts.to_dict(),
+            "top_events": event_counts.head(10).to_dict(),
+            "events_by_user": user_event_counts.head(10).to_dict(),
+            "recent_events": recent_events.to_dict(orient="records")
+        }
+    except Exception as e:
+        print(f"이벤트 분석 실패: {e}")
+        return {
+            "total_events": 0,
+            "event_types": [],
+            "top_events": [],
+            "events_by_user": {},
+            "recent_events": []
+        } 

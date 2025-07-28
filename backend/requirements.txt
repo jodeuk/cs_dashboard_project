@@ -1,10 +1,6 @@
 fastapi
 uvicorn
 pandas
-matplotlib
-wordcloud
-konlpy
-python-multipart
-aiofiles
 httpx
 python-dotenv
+# konlpy, matplotlib, wordcloud 제거됨 - JVM 의존성 문제로 인해 
