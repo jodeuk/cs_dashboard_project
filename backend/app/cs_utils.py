@@ -89,14 +89,14 @@ class ChannelTalkAPI:
     def extract_level(self, tags: List[str], type_name: str, level: int) -> str:
         """태그에서 특정 타입의 레벨을 추출합니다."""
         if not tags:
-            return "기타"
+            return None
         
         for tag in tags:
             if tag.startswith(f"{type_name}/"):
                 parts = tag.split("/")
                 if len(parts) > level:
                     return parts[level]
-        return "기타"
+        return None
 
     async def process_userchat_data(self, data: List[Dict]) -> pd.DataFrame:
         """UserChat 데이터를 처리하여 DataFrame으로 변환합니다."""
