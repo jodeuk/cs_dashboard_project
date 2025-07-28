@@ -19,8 +19,8 @@ function App() {
   const [filterOptions, setFilterOptions] = useState({});
   const [filterVals, setFilterVals] = useState({});
   const [dateGroup, setDateGroup] = useState("월간");
-  const [start, setStart] = useState("2024-04-01");
-  const [end, setEnd] = useState("2024-07-31");
+  const [start, setStart] = useState("2025-06-28");
+  const [end, setEnd] = useState("2025-07-28");
 
   // 데이터 상태
   const [periodData, setPeriodData] = useState([]);
@@ -152,6 +152,7 @@ function App() {
             type="date"
             value={start}
             onChange={e => setStart(e.target.value)}
+            max={new Date().toISOString().split('T')[0]}
             style={{ margin: "0 8px", padding: "4px 8px", borderRadius: "4px", border: "1px solid #ddd" }}
           />
           ~
@@ -159,6 +160,7 @@ function App() {
             type="date"
             value={end}
             onChange={e => setEnd(e.target.value)}
+            max={new Date().toISOString().split('T')[0]}
             style={{ margin: "0 8px", padding: "4px 8px", borderRadius: "4px", border: "1px solid #ddd" }}
           />
           <select
