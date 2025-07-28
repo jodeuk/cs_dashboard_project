@@ -1,0 +1,8 @@
+backend/
+frontend/
+data/
+.git/
+.gitignore
+README.md
+main.py
+cs_utils.py 
