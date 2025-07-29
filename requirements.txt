@@ -5,4 +5,4 @@ httpx
 python-dotenv
 openpyxl
 xlrd
-python-multipart 
+python-multipart==0.0.6 
