@@ -187,7 +187,13 @@ def get_filtered_df(df: pd.DataFrame, start: str, end: str,
                    문의유형_2차="전체", 서비스유형_2차="전체") -> pd.DataFrame:
     """필터링된 DataFrame을 반환합니다."""
     temp = df.copy()
-    temp = temp[(temp['firstAskedAt'] >= start) & (temp['firstAskedAt'] <= end)]
+    
+    # 날짜 컬럼을 datetime으로 변환
+    temp['firstAskedAt'] = pd.to_datetime(temp['firstAskedAt'])
+    start_date = pd.to_datetime(start)
+    end_date = pd.to_datetime(end)
+    
+    temp = temp[(temp['firstAskedAt'] >= start_date) & (temp['firstAskedAt'] <= end_date)]
     
     if 고객유형 != "전체": 
         temp = temp[temp["고객유형"] == 고객유형]

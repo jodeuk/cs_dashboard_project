@@ -19,10 +19,14 @@ function App() {
   const [filterOptions, setFilterOptions] = useState({});
   const [filterVals, setFilterVals] = useState({});
   const [dateGroup, setDateGroup] = useState("월간");
-  // 오늘 날짜를 기준으로 초기값 설정
-  const today = new Date().toISOString().split('T')[0];
-  const [start, setStart] = useState("2025-06-28");
-  const [end, setEnd] = useState(today);
+  // 날짜 초기값 설정 (첨부 파일 참고)
+  const today = new Date();
+  const oneMonthAgo = new Date(today.getFullYear(), today.getMonth() - 1, today.getDate());
+  
+  const formatDate = (date) => date.toISOString().split('T')[0];
+  
+  const [start, setStart] = useState(formatDate(oneMonthAgo));
+  const [end, setEnd] = useState(formatDate(today));
 
   // 데이터 상태
   const [periodData, setPeriodData] = useState([]);
@@ -153,7 +157,7 @@ function App() {
             type="date"
             value={start}
             onChange={e => setStart(e.target.value)}
-            max={new Date().toISOString().split('T')[0]}
+            max={formatDate(today)}
             style={{ margin: "0 8px", padding: "4px 8px", borderRadius: "4px", border: "1px solid #ddd" }}
           />
           ~
@@ -161,7 +165,8 @@ function App() {
             type="date"
             value={end}
             onChange={e => setEnd(e.target.value)}
-            max={new Date().toISOString().split('T')[0]}
+            max={formatDate(today)}
+            min={start}
             style={{ margin: "0 8px", padding: "4px 8px", borderRadius: "4px", border: "1px solid #ddd" }}
           />
           <select

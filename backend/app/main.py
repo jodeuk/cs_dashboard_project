@@ -238,13 +238,19 @@ async def avg_times(
         ]
         
         df = await get_cached_data(start, end)
+        
+        # 날짜 컬럼을 datetime으로 변환
+        df['firstAskedAt'] = pd.to_datetime(df['firstAskedAt'])
+        start_date = pd.to_datetime(start)
+        end_date = pd.to_datetime(end)
+        
         temp = get_filtered_df(df, start, end, 고객유형, 문의유형, 서비스유형)
         
         result = {}
         for key, label in time_keys:
             if key in temp.columns:
                 avg_time = temp[key].mean()
-                result[label] = avg_time if pd.notna(avg_time) else 0
+                result[label] = float(avg_time) if pd.notna(avg_time) else 0.0
         
         return result
     except Exception as e:
@@ -289,6 +295,14 @@ async def get_wordcloud(
     try:
         df = await get_cached_data(start, end)
         temp = get_filtered_df(df, start, end, 고객유형, 문의유형, 서비스유형)
+        
+        # chats 컬럼이 있는지 확인
+        if "chats" not in temp.columns:
+            return {
+                "keywords": [],
+                "message": "채팅 데이터가 없습니다."
+            }
+        
         temp["filtered_chats"] = temp["chats"].apply(filter_chats)
         texts = temp["filtered_chats"].dropna().apply(lambda x: " ".join(x)).astype(str)
         keyword_list = extract_keywords(" ".join(texts))
