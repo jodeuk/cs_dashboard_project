@@ -21,7 +21,7 @@ class ChannelTalkAPI:
             "Content-Type": "application/json"
         }
 
-    async def get_userchats(self, start_date: str, end_date: str, limit: int = 100) -> List[Dict]:
+    async def get_userchats(self, start_date: str, end_date: str, limit: int = 1000) -> List[Dict]:
         """Channel Talk API에서 UserChat 데이터를 가져옵니다."""
         if not self.access_key or not self.access_secret:
             raise ValueError("CHANNEL_ACCESS_KEY 또는 CHANNEL_ACCESS_SECRET 환경변수가 설정되지 않았습니다.")
@@ -47,11 +47,18 @@ class ChannelTalkAPI:
                 data = response.json()
                 
                 # API 응답 구조에 맞게 처리
+                print(f"[API] 전체 응답 키들: {list(data.keys()) if isinstance(data, dict) else 'list'}")
+                print(f"[API] 응답 데이터 타입: {type(data)}")
+                
                 if "userChats" in data:
-                    return data["userChats"]
+                    user_chats = data["userChats"]
+                    print(f"[API] userChats 개수: {len(user_chats)}")
+                    return user_chats
                 elif isinstance(data, list):
+                    print(f"[API] list 데이터 개수: {len(data)}")
                     return data
                 else:
+                    print(f"[API] 예상치 못한 응답 구조: {data}")
                     return []
                     
         except httpx.HTTPStatusError as e:
@@ -180,15 +187,35 @@ channel_api = ChannelTalkAPI()
 _data_cache = {}
 
 async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
-    """캐시된 데이터를 가져오거나 API에서 새로 가져옵니다."""
+    """캐시된 데이터를 가져오거나 JSON 파일에서 새로 가져옵니다."""
     cache_key = f"{start_date}_{end_date}"
     
     if cache_key in _data_cache:
         return _data_cache[cache_key]
     
     try:
-        raw_data = await channel_api.get_userchats(start_date, end_date)
-        df = await channel_api.process_userchat_data(raw_data)
+        # 실제 JSON 파일에서 데이터 읽기
+        import json
+        import os
+        
+        # JSON 파일 경로 (상대 경로)
+        json_file_path = "../../json_data/cs_chat_4-7.jsonl"
+        
+        if not os.path.exists(json_file_path):
+            # 절대 경로로 시도
+            json_file_path = "json_data/cs_chat_4-7.jsonl"
+        
+        if not os.path.exists(json_file_path):
+            raise FileNotFoundError(f"JSON 파일을 찾을 수 없습니다: {json_file_path}")
+        
+        # JSONL 파일 읽기
+        data = []
+        with open(json_file_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    data.append(json.loads(line))
+        
+        df = pd.DataFrame(data)
         _data_cache[cache_key] = df
         print(f"데이터 로드 성공: {len(df)} 건")
         return df
