@@ -118,6 +118,14 @@ class ChannelTalkAPI:
             user = item.get("user", {})
             
             tags = userchat.get("tags", [])
+            
+            # firstAskedAt을 Unix timestamp에서 ISO 문자열로 변환
+            first_asked_at = userchat.get("firstAskedAt")
+            if first_asked_at and isinstance(first_asked_at, (int, float)):
+                # Unix timestamp (밀리초)를 ISO 문자열로 변환
+                from datetime import datetime
+                first_asked_at = datetime.fromtimestamp(first_asked_at / 1000).isoformat()
+            
             processed_item = {
                 # 실제 데이터 구조에 맞춘 키들
                 "userId": userchat.get("userId"),
@@ -125,7 +133,7 @@ class ChannelTalkAPI:
                 "workflow": userchat.get("workflow"),
                 "tags": tags,
                 "chats": userchat.get("chats", []),
-                "firstAskedAt": userchat.get("firstAskedAt"),
+                "firstAskedAt": first_asked_at,
                 # operation이 붙은 키들 (우리가 사용할 키들)
                 "operationWaitingTime": userchat.get("operationWaitingTime", 0),
                 "operationAvgReplyTime": userchat.get("operationAvgReplyTime", 0),

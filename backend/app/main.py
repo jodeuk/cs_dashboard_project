@@ -335,19 +335,27 @@ async def get_statistics(start: str = Query(...), end: str = Query(...)):
     try:
         df = await get_cached_data(start, end)
         
-        # 날짜 컬럼을 datetime으로 변환
-        df['firstAskedAt'] = pd.to_datetime(df['firstAskedAt'])
-        start_date = pd.to_datetime(start)
-        end_date = pd.to_datetime(end)
-        
+        # 날짜 컬럼을 datetime으로 변환 (더 안전한 파싱)
         print(f"[STATISTICS] 전체 데이터 수: {len(df)}")
-        print(f"[STATISTICS] 시작 날짜: {start_date}")
-        print(f"[STATISTICS] 종료 날짜: {end_date}")
-        print(f"[STATISTICS] firstAskedAt 범위: {df['firstAskedAt'].min()} ~ {df['firstAskedAt'].max()}")
+        print(f"[STATISTICS] firstAskedAt 샘플 값들:")
+        print(df['firstAskedAt'].head().tolist())
         
-        temp = df[(df['firstAskedAt'] >= start_date) & (df['firstAskedAt'] <= end_date)]
-        
-        print(f"[STATISTICS] 필터링 후 데이터 수: {len(temp)}")
+        # 더 안전한 날짜 파싱
+        try:
+            df['firstAskedAt'] = pd.to_datetime(df['firstAskedAt'], errors='coerce')
+            start_date = pd.to_datetime(start)
+            end_date = pd.to_datetime(end)
+            
+            print(f"[STATISTICS] 시작 날짜: {start_date}")
+            print(f"[STATISTICS] 종료 날짜: {end_date}")
+            print(f"[STATISTICS] firstAskedAt 범위: {df['firstAskedAt'].min()} ~ {df['firstAskedAt'].max()}")
+            
+            temp = df[(df['firstAskedAt'] >= start_date) & (df['firstAskedAt'] <= end_date)]
+            
+            print(f"[STATISTICS] 필터링 후 데이터 수: {len(temp)}")
+        except Exception as e:
+            print(f"[STATISTICS] 날짜 파싱 오류: {e}")
+            temp = df  # 날짜 필터링 실패 시 전체 데이터 사용
         
         # NaN 값을 안전하게 처리하는 함수
         def safe_mean(series):
