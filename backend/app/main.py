@@ -1,6 +1,6 @@
 import os
 import re
-from fastapi import FastAPI, Query, HTTPException, UploadFile, File
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import pandas as pd
@@ -336,44 +336,14 @@ async def get_user_chat(userchat_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"UserChat 조회 실패: {str(e)}")
 
-# 4-9. CSAT Excel 파일 업로드
+# 4-9. CSAT Excel 파일 업로드 (임시 비활성화)
 @app.post("/api/upload-csat")
-async def upload_csat_file(file: UploadFile = File(...)):
-    """CSAT Excel 파일을 업로드하여 데이터를 처리합니다."""
-    global _csat_data
-    
-    try:
-        # 파일 확장자 확인
-        if not file.filename.endswith(('.xlsx', '.xls')):
-            raise HTTPException(status_code=400, detail="Excel 파일(.xlsx, .xls)만 업로드 가능합니다.")
-        
-        # 파일 내용 읽기
-        content = await file.read()
-        
-        # Excel 파일을 DataFrame으로 변환 (첫 번째 시트만 사용)
-        try:
-            df = pd.read_excel(io.BytesIO(content), sheet_name=0)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Excel 파일 읽기 실패: {str(e)}")
-        
-        # 데이터 검증
-        if df.empty:
-            raise HTTPException(status_code=400, detail="업로드된 파일에 데이터가 없습니다.")
-        
-        # CSAT 데이터 저장
-        _csat_data = df.to_dict(orient="records")
-        
-        return {
-            "message": "CSAT 파일이 성공적으로 업로드되었습니다.",
-            "filename": file.filename,
-            "rows": len(df),
-            "columns": list(df.columns)
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"파일 업로드 실패: {str(e)}")
+async def upload_csat_file():
+    """CSAT Excel 파일 업로드 기능이 임시로 비활성화되었습니다."""
+    return {
+        "message": "CSAT 파일 업로드 기능이 임시로 비활성화되었습니다. python-multipart 설치 문제 해결 후 다시 활성화됩니다.",
+        "status": "disabled"
+    }
 
 # 4-10. CSAT 분석 데이터 조회
 @app.get("/api/csat-analysis")
