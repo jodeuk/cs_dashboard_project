@@ -6,6 +6,8 @@ services:
     envVars:
       - key: CHANNEL_ACCESS_TOKEN
         value: 68883a95c1c0f08306f3
+      - key: CHANNEL_ACCESS_SECRET
+        value: 7c7fc51ce244238c23c6fb86c0d7583a
       - key: PORT
         value: 10000
     autoDeploy: true 

@@ -33,8 +33,10 @@ class ChannelTalkAPI:
     def __init__(self):
         self.base_url = "https://api.channel.io"
         self.access_key = os.getenv("CHANNEL_ACCESS_TOKEN")
+        self.access_secret = os.getenv("CHANNEL_ACCESS_SECRET")
         self.headers = {
-            "Authorization": f"Bearer {self.access_key}",
+            "X-Access-Key": self.access_key,
+            "X-Access-Secret": self.access_secret,
             "Content-Type": "application/json"
         }
 
@@ -109,8 +111,10 @@ async def debug_channel_api():
             "base_url": channel_api.base_url,
             "access_key_length": len(access_key),
             "access_key_prefix": access_key[:10] + "..." if len(access_key) > 10 else access_key,
+            "access_secret_exists": bool(channel_api.access_secret),
             "headers": {
-                "Authorization": "Bearer ***",
+                "X-Access-Key": "***",
+                "X-Access-Secret": "***",
                 "Content-Type": "application/json"
             }
         }
