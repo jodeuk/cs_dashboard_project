@@ -34,9 +34,14 @@ class ChannelTalkAPI:
         self.base_url = "https://api.channel.io"
         self.access_key = os.getenv("CHANNEL_ACCESS_TOKEN")
         self.access_secret = os.getenv("CHANNEL_ACCESS_SECRET")
+        
+        # Basic Authentication 방식으로 변경
+        import base64
+        credentials = f"{self.access_key}:{self.access_secret}"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+        
         self.headers = {
-            "X-Access-Key": self.access_key,
-            "X-Access-Secret": self.access_secret,
+            "Authorization": f"Basic {encoded_credentials}",
             "Content-Type": "application/json"
         }
 
@@ -113,8 +118,7 @@ async def debug_channel_api():
             "access_key_prefix": access_key[:10] + "..." if len(access_key) > 10 else access_key,
             "access_secret_exists": bool(channel_api.access_secret),
             "headers": {
-                "X-Access-Key": "***",
-                "X-Access-Secret": "***",
+                "Authorization": "Basic ***",
                 "Content-Type": "application/json"
             }
         }
