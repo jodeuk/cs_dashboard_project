@@ -258,7 +258,13 @@ async def customer_type_cs(
 ):
     try:
         df = await get_cached_data(start, end)
-        temp = df[(df['firstAskedAt'] >= start) & (df['firstAskedAt'] <= end)]
+        
+        # 날짜 컬럼을 datetime으로 변환
+        df['firstAskedAt'] = pd.to_datetime(df['firstAskedAt'])
+        start_date = pd.to_datetime(start)
+        end_date = pd.to_datetime(end)
+        
+        temp = df[(df['firstAskedAt'] >= start_date) & (df['firstAskedAt'] <= end_date)]
         
         customer_counts = temp["고객유형"].value_counts().head(top_n)
         data = []
@@ -304,15 +310,21 @@ async def get_wordcloud(
 async def get_statistics(start: str = Query(...), end: str = Query(...)):
     try:
         df = await get_cached_data(start, end)
-        temp = df[(df['firstAskedAt'] >= start) & (df['firstAskedAt'] <= end)]
+        
+        # 날짜 컬럼을 datetime으로 변환
+        df['firstAskedAt'] = pd.to_datetime(df['firstAskedAt'])
+        start_date = pd.to_datetime(start)
+        end_date = pd.to_datetime(end)
+        
+        temp = df[(df['firstAskedAt'] >= start_date) & (df['firstAskedAt'] <= end_date)]
         
         return {
             "총문의수": len(temp),
             "고객유형수": temp["고객유형"].nunique(),
             "문의유형수": temp["문의유형"].nunique(),
             "서비스유형수": temp["서비스유형"].nunique(),
-            "평균첫응답시간": temp["operationWaitingTime"].mean() if "operationWaitingTime" in temp.columns else 0,
-            "평균응답시간": temp["operationAvgReplyTime"].mean() if "operationAvgReplyTime" in temp.columns else 0
+            "평균첫응답시간": float(temp["operationWaitingTime"].mean()) if "operationWaitingTime" in temp.columns else 0.0,
+            "평균응답시간": float(temp["operationAvgReplyTime"].mean()) if "operationAvgReplyTime" in temp.columns else 0.0
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"통계 조회 실패: {str(e)}")

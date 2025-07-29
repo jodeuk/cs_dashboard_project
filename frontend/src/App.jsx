@@ -19,8 +19,10 @@ function App() {
   const [filterOptions, setFilterOptions] = useState({});
   const [filterVals, setFilterVals] = useState({});
   const [dateGroup, setDateGroup] = useState("월간");
+  // 오늘 날짜를 기준으로 초기값 설정
+  const today = new Date().toISOString().split('T')[0];
   const [start, setStart] = useState("2025-06-28");
-  const [end, setEnd] = useState("2025-07-28");
+  const [end, setEnd] = useState(today);
 
   // 데이터 상태
   const [periodData, setPeriodData] = useState([]);
