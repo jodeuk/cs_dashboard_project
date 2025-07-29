@@ -48,6 +48,8 @@ const CsatUploadSection = ({ onUploadSuccess }) => {
             file_type: fileType
           };
 
+          console.log('Uploading file:', file.name, 'Type:', fileType, 'Size:', base64Data.length);
+
           const response = await fetch('/api/upload-csat', {
             method: 'POST',
             headers: {
@@ -56,9 +58,24 @@ const CsatUploadSection = ({ onUploadSuccess }) => {
             body: JSON.stringify(uploadData),
           });
 
-          const result = await response.json();
+          console.log('Response status:', response.status);
+          console.log('Response headers:', response.headers);
 
-          if (response.ok && result.status === 'success') {
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+
+          const responseText = await response.text();
+          console.log('Response text:', responseText);
+
+          let result;
+          try {
+            result = JSON.parse(responseText);
+          } catch (parseError) {
+            throw new Error(`JSON 파싱 실패: ${responseText}`);
+          }
+
+          if (result.status === 'success') {
             setUploadStatus({
               type: 'success',
               message: `${result.message} (${result.data_count}건, ${result.columns.length}컬럼)`
@@ -73,6 +90,7 @@ const CsatUploadSection = ({ onUploadSuccess }) => {
             });
           }
         } catch (error) {
+          console.error('Upload error:', error);
           setUploadStatus({
             type: 'error',
             message: `업로드 중 오류가 발생했습니다: ${error.message}`
