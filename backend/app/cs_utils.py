@@ -80,50 +80,7 @@ class ChannelTalkAPI:
             print(f"API 호출 중 오류 발생: {str(e)}")
             raise
 
-    async def get_user_events(self, user_id: str, since: Optional[int] = None, limit: int = 25) -> Dict:
-        """Channel Talk API에서 사용자 이벤트 데이터를 가져옵니다."""
-        if not self.access_key or not self.access_secret:
-            raise ValueError("CHANNEL_ACCESS_KEY 또는 CHANNEL_ACCESS_SECRET 환경변수가 설정되지 않았습니다.")
-        
-        url = f"{self.base_url}/open/v5/users/{user_id}/events"
-        params = {
-            "sortOrder": "desc",
-            "limit": limit
-        }
-        
-        if since:
-            params["since"] = since
-        
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, headers=self.headers, params=params)
-                response.raise_for_status()
-                return response.json()
-        except httpx.HTTPStatusError as e:
-            print(f"HTTP Error: {e.response.status_code} - {e.response.text}")
-            raise
-        except Exception as e:
-            print(f"API 호출 중 오류 발생: {str(e)}")
-            raise
 
-    async def get_all_user_events(self, user_ids: List[str], since: Optional[int] = None) -> List[Dict]:
-        """여러 사용자의 이벤트 데이터를 병렬로 가져옵니다."""
-        if not self.access_key:
-            raise ValueError("CHANNEL_ACCESS_TOKEN 환경변수가 설정되지 않았습니다.")
-        
-        tasks = []
-        for user_id in user_ids:
-            task = self.get_user_events(user_id, since)
-            tasks.append(task)
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        all_events = []
-        for result in results:
-            if isinstance(result, dict) and "events" in result:
-                all_events.extend(result["events"])
-        
-        return all_events
 
     def hms_to_seconds(self, time_str: str) -> int:
         """HH:MM:SS 형식을 초로 변환합니다."""
@@ -245,62 +202,4 @@ def get_filtered_df(df: pd.DataFrame, start: str, end: str,
     
     return temp.reset_index(drop=True)
 
-async def process_events_data(events: List[Dict]) -> pd.DataFrame:
-    """이벤트 데이터를 처리하여 DataFrame으로 변환합니다."""
-    processed_events = []
-    
-    for event in events:
-        processed_event = {
-            "userId": event.get("userId"),
-            "eventId": event.get("id"),
-            "channelId": event.get("channelId"),
-            "eventName": event.get("name"),
-            "properties": event.get("property", {}),
-            "createdAt": event.get("createdAt"),
-            "expireAt": event.get("expireAt"),
-            "version": event.get("version")
-        }
-        processed_events.append(processed_event)
-    
-    return pd.DataFrame(processed_events)
-
-async def get_events_analysis(user_ids: List[str], since: Optional[int] = None) -> Dict:
-    """이벤트 데이터 분석을 수행합니다."""
-    try:
-        events = await channel_api.get_all_user_events(user_ids, since)
-        df = await process_events_data(events)
-        
-        if df.empty:
-            return {
-                "total_events": 0,
-                "event_types": [],
-                "top_events": [],
-                "events_by_user": {},
-                "recent_events": []
-            }
-        
-        # 이벤트 타입별 통계
-        event_counts = df["eventName"].value_counts()
-        
-        # 사용자별 이벤트 수
-        user_event_counts = df["userId"].value_counts()
-        
-        # 최근 이벤트 (최대 10개)
-        recent_events = df.sort_values("createdAt", ascending=False).head(10)
-        
-        return {
-            "total_events": len(df),
-            "event_types": event_counts.to_dict(),
-            "top_events": event_counts.head(10).to_dict(),
-            "events_by_user": user_event_counts.head(10).to_dict(),
-            "recent_events": recent_events.to_dict(orient="records")
-        }
-    except Exception as e:
-        print(f"이벤트 분석 실패: {e}")
-        return {
-            "total_events": 0,
-            "event_types": [],
-            "top_events": [],
-            "events_by_user": {},
-            "recent_events": []
-        } 
+ 

@@ -53,20 +53,6 @@ export async function fetchSample(start, end, n = 5) {
   return apiCall('/sample', { start, end, n });
 }
 
-// 사용자 이벤트 분석
-export async function fetchUserEventsAnalysis(userIds, since = null) {
-  const params = { user_ids: userIds };
-  if (since) params.since = since;
-  return apiCall('/user-events', params);
-}
-
-// 단일 사용자 이벤트 조회
-export async function fetchUserEvents(userId, since = null, limit = 25) {
-  const params = { limit };
-  if (since) params.since = since;
-  return apiCall(`/user-events/${userId}`, params);
-}
-
 // API 상태 확인
 export async function checkApiHealth() {
   try {

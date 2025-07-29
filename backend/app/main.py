@@ -1,12 +1,13 @@
 import os
 import re
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import pandas as pd
 from datetime import datetime
 from typing import Optional
-from .cs_utils import get_cached_data, get_filtered_df, channel_api, get_events_analysis
+import io
+from .cs_utils import get_cached_data, get_filtered_df, channel_api
 
 # ---- 1. FastAPI 기본 셋업 ----
 app = FastAPI(title="CS Dashboard API", version="1.0.0")
@@ -20,6 +21,9 @@ app.add_middleware(
 
 # ---- 2. 설정 ----
 FONT_PATH = os.environ.get("FONT_PATH", "/usr/share/fonts/truetype/nanum/NanumGothic.ttf")
+
+# CSAT 데이터 저장소
+_csat_data = None
 
 # ---- 3. Stopwords/필터 ----
 stopwords = [
@@ -268,49 +272,7 @@ async def customer_type_cs(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"고객유형별 문의량 조회 실패: {str(e)}")
 
-# 4-5. CSAT 분석
-@app.get("/api/csat-analysis")
-async def csat_analysis(
-    start: str = Query(...), end: str = Query(...),
-    고객유형: str = Query("전체"),
-    문의유형: str = Query("전체"),
-    서비스유형: str = Query("전체")
-):
-    try:
-        df = await get_cached_data(start, end)
-        temp = get_filtered_df(df, start, end, 고객유형, 문의유형, 서비스유형)
-        
-        # CSAT 데이터가 있는 경우에만 처리
-        csat_columns = [col for col in temp.columns if col.startswith('A-')]
-        
-        if not csat_columns:
-            return {
-                "평균점수": [],
-                "월별트렌드": {},
-                "문항목록": []
-            }
-        
-        # CSAT 평균 점수
-        csat_avg = temp[csat_columns].mean().reset_index()
-        csat_avg.columns = ["문항", "평균점수"]
-        
-        # 월별 CSAT 트렌드
-        temp["month"] = pd.to_datetime(temp["firstAskedAt"]).dt.to_period('M').astype(str)
-        trend_data = {}
-        for col in csat_columns:
-            trend_df = temp.groupby("month")[col].mean().reset_index()
-            trend_df["월"] = trend_df["month"].apply(lambda x: str(x)[-2:])
-            trend_data[col] = trend_df[["월", col]].to_dict(orient="records")
-        
-        return {
-            "평균점수": csat_avg.to_dict(orient="records"),
-            "월별트렌드": trend_data,
-            "문항목록": csat_columns
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"CSAT 분석 실패: {str(e)}")
-
-# 4-6. 워드클라우드 (키워드 분석)
+# 4-5. 워드클라우드 (키워드 분석)
 @app.get("/api/wordcloud")
 async def get_wordcloud(
     start: str = Query(...), end: str = Query(...),
@@ -337,7 +299,7 @@ async def get_wordcloud(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"키워드 분석 실패: {str(e)}")
 
-# 4-7. 데이터 통계
+# 4-6. 데이터 통계
 @app.get("/api/statistics")
 async def get_statistics(start: str = Query(...), end: str = Query(...)):
     try:
@@ -355,7 +317,7 @@ async def get_statistics(start: str = Query(...), end: str = Query(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"통계 조회 실패: {str(e)}")
 
-# 4-8. 원본 데이터 일부 확인
+# 4-7. 원본 데이터 일부 확인
 @app.get("/api/sample")
 async def sample(start: str = Query(...), end: str = Query(...), n: int = 5):
     try:
@@ -364,40 +326,7 @@ async def sample(start: str = Query(...), end: str = Query(...), n: int = 5):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"샘플 데이터 조회 실패: {str(e)}")
 
-# 4-9. 사용자 이벤트 분석
-@app.get("/api/user-events")
-async def user_events_analysis(
-    user_ids: str = Query(...),  # 쉼표로 구분된 사용자 ID들
-    since: Optional[int] = Query(None)  # Unix timestamp (microseconds)
-):
-    try:
-        # 쉼표로 구분된 사용자 ID를 리스트로 변환
-        user_id_list = [uid.strip() for uid in user_ids.split(",") if uid.strip()]
-        
-        if not user_id_list:
-            raise HTTPException(status_code=400, detail="사용자 ID가 필요합니다.")
-        
-        # 이벤트 분석 수행
-        analysis_result = await get_events_analysis(user_id_list, since)
-        
-        return analysis_result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"이벤트 분석 실패: {str(e)}")
-
-# 4-10. 단일 사용자 이벤트 조회
-@app.get("/api/user-events/{user_id}")
-async def get_user_events(
-    user_id: str,
-    since: Optional[int] = Query(None),
-    limit: int = Query(25)
-):
-    try:
-        events = await channel_api.get_user_events(user_id, since, limit)
-        return events
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"사용자 이벤트 조회 실패: {str(e)}")
-
-# 4-11. 특정 UserChat 조회
+# 4-8. 특정 UserChat 조회
 @app.get("/api/user-chat/{userchat_id}")
 async def get_user_chat(userchat_id: str):
     """특정 UserChat ID로 상세 정보를 조회합니다."""
@@ -405,4 +334,159 @@ async def get_user_chat(userchat_id: str):
         userchat_data = await channel_api.get_userchat_by_id(userchat_id)
         return userchat_data
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"UserChat 조회 실패: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"UserChat 조회 실패: {str(e)}")
+
+# 4-9. CSAT Excel 파일 업로드
+@app.post("/api/upload-csat")
+async def upload_csat_file(file: UploadFile = File(...)):
+    """CSAT Excel 파일을 업로드하여 데이터를 처리합니다."""
+    global _csat_data
+    
+    try:
+        # 파일 확장자 확인
+        if not file.filename.endswith(('.xlsx', '.xls')):
+            raise HTTPException(status_code=400, detail="Excel 파일(.xlsx, .xls)만 업로드 가능합니다.")
+        
+        # 파일 내용 읽기
+        content = await file.read()
+        
+        # Excel 파일을 DataFrame으로 변환
+        try:
+            df = pd.read_excel(io.BytesIO(content))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Excel 파일 읽기 실패: {str(e)}")
+        
+        # 데이터 검증
+        if df.empty:
+            raise HTTPException(status_code=400, detail="업로드된 파일에 데이터가 없습니다.")
+        
+        # CSAT 데이터 저장
+        _csat_data = df.to_dict(orient="records")
+        
+        return {
+            "message": "CSAT 파일이 성공적으로 업로드되었습니다.",
+            "filename": file.filename,
+            "rows": len(df),
+            "columns": list(df.columns)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"파일 업로드 실패: {str(e)}")
+
+# 4-10. CSAT 분석 데이터 조회
+@app.get("/api/csat-analysis")
+async def csat_analysis(
+    start: str = Query(...), 
+    end: str = Query(...),
+    고객유형: str = Query("전체"),
+    문의유형: str = Query("전체"),
+    서비스유형: str = Query("전체")
+):
+    """업로드된 CSAT 데이터를 분석합니다."""
+    global _csat_data
+    
+    try:
+        if _csat_data is None:
+            return {
+                "평균점수": [],
+                "월별트렌드": {},
+                "문항목록": [],
+                "message": "CSAT 데이터가 업로드되지 않았습니다. Excel 파일을 먼저 업로드해주세요."
+            }
+        
+        # DataFrame으로 변환
+        df = pd.DataFrame(_csat_data)
+        
+        # 날짜 컬럼 찾기 (firstAskedAt 우선)
+        if 'firstAskedAt' in df.columns:
+            date_col = 'firstAskedAt'
+        else:
+            date_columns = [col for col in df.columns if any(keyword in col.lower() for keyword in ['날짜', 'date', '생성', 'created'])]
+            if not date_columns:
+                return {
+                    "평균점수": [],
+                    "월별트렌드": {},
+                    "문항목록": [],
+                    "message": "날짜 컬럼을 찾을 수 없습니다."
+                }
+            date_col = date_columns[0]
+        
+        # 날짜 형식 변환
+        try:
+            df[date_col] = pd.to_datetime(df[date_col])
+        except:
+            return {
+                "평균점수": [],
+                "월별트렌드": {},
+                "문항목록": [],
+                "message": "날짜 형식 변환에 실패했습니다."
+            }
+        
+        # 기간 필터링
+        start_date = pd.to_datetime(start)
+        end_date = pd.to_datetime(end)
+        filtered_df = df[(df[date_col] >= start_date) & (df[date_col] <= end_date)]
+        
+        if filtered_df.empty:
+            return {
+                "평균점수": [],
+                "월별트렌드": {},
+                "문항목록": [],
+                "message": "선택한 기간에 데이터가 없습니다."
+            }
+        
+        # CSAT 관련 컬럼 찾기 (A-1, A-2, A-4, A-5 우선)
+        csat_score_columns = []
+        csat_text_columns = []
+        
+        # 점수 컬럼 (A-1, A-2, A-4, A-5)
+        for col in filtered_df.columns:
+            if col.startswith('A-') and col in ['A-1', 'A-2', 'A-4', 'A-5']:
+                if filtered_df[col].dtype in ['int64', 'float64']:
+                    csat_score_columns.append(col)
+        
+        # 텍스트 컬럼 (A-3, A-6)
+        for col in filtered_df.columns:
+            if col.startswith('A-') and col in ['A-3', 'A-6']:
+                csat_text_columns.append(col)
+        
+        if not csat_score_columns:
+            return {
+                "평균점수": [],
+                "월별트렌드": {},
+                "문항목록": [],
+                "텍스트응답": [],
+                "message": "CSAT 점수 컬럼을 찾을 수 없습니다."
+            }
+        
+        # 평균 점수 계산
+        csat_avg = filtered_df[csat_score_columns].mean().reset_index()
+        csat_avg.columns = ["문항", "평균점수"]
+        
+        # 월별 트렌드 계산
+        filtered_df["month"] = filtered_df[date_col].dt.to_period('M')
+        trend_data = {}
+        for col in csat_score_columns:
+            trend_df = filtered_df.groupby("month")[col].mean().reset_index()
+            trend_df["월"] = trend_df["month"].apply(lambda x: str(x)[-2:])
+            trend_data[col] = trend_df[["월", col]].to_dict(orient="records")
+        
+        # 텍스트 응답 분석
+        text_responses = {}
+        for col in csat_text_columns:
+            # 빈 값이 아닌 텍스트 응답만 필터링
+            valid_responses = filtered_df[col].dropna()
+            if len(valid_responses) > 0:
+                text_responses[col] = valid_responses.tolist()
+        
+        return {
+            "평균점수": csat_avg.to_dict(orient="records"),
+            "월별트렌드": trend_data,
+            "문항목록": csat_score_columns,
+            "텍스트응답": text_responses
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"CSAT 분석 실패: {str(e)}") 

@@ -11,8 +11,8 @@ import {
 import FilterPanel from "./components/FilterPanel";
 import ChartSection from "./components/ChartSection";
 import WordCloudSection from "./components/WordCloudSection";
-import CsatSection from "./components/CsatSection";
-import EventsSection from "./components/EventsSection";
+import CsatUploadSection from "./components/CsatUploadSection";
+import CsatAnalysisSection from "./components/CsatAnalysisSection";
 
 function App() {
   // 필터 상태
@@ -28,7 +28,6 @@ function App() {
   const [customerTypeCS, setCustomerTypeCS] = useState([]);
   const [csatData, setCsatData] = useState({});
   const [statistics, setStatistics] = useState({});
-  const [userIds, setUserIds] = useState([]);
 
   // UI 상태
   const [loading, setLoading] = useState(false);
@@ -173,21 +172,7 @@ function App() {
           </select>
         </div>
 
-        <div style={{ marginBottom: 16 }}>
-          <label style={{ marginRight: "8px", fontWeight: "bold" }}>사용자 ID (이벤트 분석용):</label>
-          <input
-            type="text"
-            placeholder="사용자 ID를 쉼표로 구분하여 입력 (예: user1,user2,user3)"
-            value={userIds.join(',')}
-            onChange={e => setUserIds(e.target.value.split(',').map(id => id.trim()).filter(id => id))}
-            style={{ 
-              width: "400px", 
-              padding: "4px 8px", 
-              borderRadius: "4px", 
-              border: "1px solid #ddd" 
-            }}
-          />
-        </div>
+
 
         {statistics.총문의수 && (
           <div style={{
@@ -242,8 +227,9 @@ function App() {
         />
 
         <WordCloudSection params={{ start, end, ...filterVals }} loading={loading} />
-        <CsatSection data={csatData} loading={loading} />
-        <EventsSection userIds={userIds} loading={loading} />
+        
+        <CsatUploadSection onUploadSuccess={onFilter} />
+        <CsatAnalysisSection data={csatData} loading={loading} />
       </div>
     </div>
   );
