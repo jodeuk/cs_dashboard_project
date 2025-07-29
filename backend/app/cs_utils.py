@@ -21,24 +21,13 @@ class ChannelTalkAPI:
             "Content-Type": "application/json"
         }
 
-    async def get_userchats(self, start_date: str, end_date: str, limit: int = 1000) -> List[Dict]:
-        """Channel Talk API에서 UserChat 데이터를 가져옵니다."""
+    async def get_all_users(self, limit: int = 100) -> List[Dict]:
+        """모든 사용자 목록을 가져옵니다."""
         if not self.access_key or not self.access_secret:
             raise ValueError("CHANNEL_ACCESS_KEY 또는 CHANNEL_ACCESS_SECRET 환경변수가 설정되지 않았습니다.")
         
-        # 올바른 API 엔드포인트 사용
-        url = f"{self.base_url}/open/v5/user-chats"
-        
-        # 날짜를 Unix timestamp로 변환 (마이크로초 단위)
-        start_timestamp = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp() * 1000000)
-        end_timestamp = int(datetime.strptime(end_date, "%Y-%m-%d").timestamp() * 1000000)
-        
-        params = {
-            "startAt": start_timestamp,
-            "endAt": end_timestamp,
-            "limit": limit,
-            "sortOrder": "desc"
-        }
+        url = f"{self.base_url}/open/v5/users"
+        params = {"limit": limit}
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -46,27 +35,94 @@ class ChannelTalkAPI:
                 response.raise_for_status()
                 data = response.json()
                 
-                # API 응답 구조에 맞게 처리
-                print(f"[API] 전체 응답 키들: {list(data.keys()) if isinstance(data, dict) else 'list'}")
-                print(f"[API] 응답 데이터 타입: {type(data)}")
+                print(f"[API] 사용자 목록 응답 키들: {list(data.keys()) if isinstance(data, dict) else 'list'}")
                 
-                if "userChats" in data:
-                    user_chats = data["userChats"]
-                    print(f"[API] userChats 개수: {len(user_chats)}")
-                    return user_chats
+                if "users" in data:
+                    users = data["users"]
+                    print(f"[API] 사용자 수: {len(users)}")
+                    return users
                 elif isinstance(data, list):
-                    print(f"[API] list 데이터 개수: {len(data)}")
+                    print(f"[API] 사용자 목록 개수: {len(data)}")
                     return data
                 else:
-                    print(f"[API] 예상치 못한 응답 구조: {data}")
+                    print(f"[API] 예상치 못한 사용자 응답 구조: {data}")
                     return []
                     
         except httpx.HTTPStatusError as e:
             print(f"HTTP Error: {e.response.status_code} - {e.response.text}")
             raise
         except Exception as e:
+            print(f"사용자 목록 API 호출 중 오류 발생: {str(e)}")
+            raise
+
+    async def get_userchats(self, start_date: str, end_date: str, limit: int = 500) -> List[Dict]:
+        """Channel Talk API에서 UserChat 데이터를 가져옵니다."""
+        if not self.access_key or not self.access_secret:
+            raise ValueError("CHANNEL_ACCESS_KEY 또는 CHANNEL_ACCESS_SECRET 환경변수가 설정되지 않았습니다.")
+        
+        # 올바른 API 엔드포인트 사용
+        url = f"{self.base_url}/open/v5/user-chats"
+        
+        all_userchats = []
+        since = None
+        
+        try:
+            while True:
+                params = {
+                    "limit": min(limit, 500),  # 최대 500개
+                    "sortOrder": "desc",
+                    "state": "closed"  # 완료된 채팅만
+                }
+                
+                if since:
+                    params["since"] = since
+                
+                print(f"[API] API 호출 중... since: {since}")
+                
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(url, headers=self.headers, params=params)
+                    response.raise_for_status()
+                    data = response.json()
+                    
+                    print(f"[API] 응답 키들: {list(data.keys()) if isinstance(data, dict) else 'list'}")
+                    
+                    if "userChats" in data:
+                        user_chats = data["userChats"]
+                        print(f"[API] 이번 페이지 채팅 수: {len(user_chats)}")
+                        
+                        # 날짜 필터링
+                        start_timestamp = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp() * 1000)
+                        end_timestamp = int(datetime.strptime(end_date, "%Y-%m-%d").timestamp() * 1000)
+                        
+                        filtered_chats = []
+                        for chat in user_chats:
+                            first_asked_at = chat.get("firstAskedAt")
+                            if first_asked_at and start_timestamp <= first_asked_at <= end_timestamp:
+                                filtered_chats.append(chat)
+                        
+                        all_userchats.extend(filtered_chats)
+                        print(f"[API] 필터링 후 이번 페이지 채팅 수: {len(filtered_chats)}")
+                        
+                        # 다음 페이지 확인
+                        if "next" in data and data["next"]:
+                            since = data["next"]
+                            print(f"[API] 다음 페이지 since: {since}")
+                        else:
+                            print("[API] 더 이상 페이지가 없습니다.")
+                            break
+                    else:
+                        print(f"[API] userChats 키가 없습니다. 응답: {data}")
+                        break
+                        
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP Error: {e.response.status_code} - {e.response.text}")
+            raise
+        except Exception as e:
             print(f"API 호출 중 오류 발생: {str(e)}")
             raise
+        
+        print(f"[API] 총 수집된 채팅 수: {len(all_userchats)}")
+        return all_userchats
 
     async def get_userchat_by_id(self, userchat_id: str) -> Dict:
         """특정 UserChat ID로 상세 정보를 가져옵니다."""
@@ -187,35 +243,15 @@ channel_api = ChannelTalkAPI()
 _data_cache = {}
 
 async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
-    """캐시된 데이터를 가져오거나 JSON 파일에서 새로 가져옵니다."""
+    """캐시된 데이터를 가져오거나 API에서 새로 가져옵니다."""
     cache_key = f"{start_date}_{end_date}"
     
     if cache_key in _data_cache:
         return _data_cache[cache_key]
     
     try:
-        # 실제 JSON 파일에서 데이터 읽기
-        import json
-        import os
-        
-        # JSON 파일 경로 (상대 경로)
-        json_file_path = "../../json_data/cs_chat_4-7.jsonl"
-        
-        if not os.path.exists(json_file_path):
-            # 절대 경로로 시도
-            json_file_path = "json_data/cs_chat_4-7.jsonl"
-        
-        if not os.path.exists(json_file_path):
-            raise FileNotFoundError(f"JSON 파일을 찾을 수 없습니다: {json_file_path}")
-        
-        # JSONL 파일 읽기
-        data = []
-        with open(json_file_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.strip():
-                    data.append(json.loads(line))
-        
-        df = pd.DataFrame(data)
+        raw_data = await channel_api.get_userchats(start_date, end_date)
+        df = await channel_api.process_userchat_data(raw_data)
         _data_cache[cache_key] = df
         print(f"데이터 로드 성공: {len(df)} 건")
         return df
