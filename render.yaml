@@ -8,4 +8,5 @@ services:
       - key: CHANNEL_ACCESS_TOKEN
         value: 688702bd14ed5ca81e4b
       - key: PORT
-        value: 10000 
+        value: 10000
+    autoDeploy: true 
