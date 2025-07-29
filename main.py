@@ -35,9 +35,9 @@ class ChannelTalkAPI:
         self.access_key = os.getenv("CHANNEL_ACCESS_TOKEN")
         self.access_secret = os.getenv("CHANNEL_ACCESS_SECRET")
         
-        # API Key만 사용하는 방식으로 변경
+        # Bearer 토큰 방식으로 변경
         self.headers = {
-            "X-Access-Key": self.access_key,
+            "Authorization": f"Bearer {self.access_key}",
             "Content-Type": "application/json"
         }
 
@@ -46,11 +46,14 @@ class ChannelTalkAPI:
         if not self.access_key:
             raise ValueError("CHANNEL_ACCESS_TOKEN 환경변수가 설정되지 않았습니다.")
         
-        url = f"{self.base_url}/openapi/v5/userchats"
+        url = f"{self.base_url}/open/v5/user-chats"
+        
+        start_timestamp = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp() * 1000000)
+        end_timestamp = int(datetime.strptime(end_date, "%Y-%m-%d").timestamp() * 1000000)
         
         params = {
-            "startDate": start_date,
-            "endDate": end_date,
+            "startAt": start_timestamp,
+            "endAt": end_timestamp,
             "limit": limit,
             "sortOrder": "desc"
         }
@@ -111,7 +114,7 @@ async def debug_channel_api():
             "access_key_prefix": access_key[:10] + "..." if len(access_key) > 10 else access_key,
             "access_secret_exists": bool(channel_api.access_secret),
             "headers": {
-                "X-Access-Key": "***",
+                "Authorization": "Bearer ***",
                 "Content-Type": "application/json"
             }
         }
