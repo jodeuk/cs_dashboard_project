@@ -24,9 +24,10 @@ function App() {
   const oneMonthAgo = new Date(today.getFullYear(), today.getMonth() - 1, today.getDate());
   
   const formatDate = (date) => date.toISOString().split('T')[0];
+  const todayStr = formatDate(today);
   
   const [start, setStart] = useState(formatDate(oneMonthAgo));
-  const [end, setEnd] = useState(formatDate(today));
+  const [end, setEnd] = useState(todayStr);
 
   // 데이터 상태
   const [periodData, setPeriodData] = useState([]);
@@ -157,7 +158,7 @@ function App() {
             type="date"
             value={start}
             onChange={e => setStart(e.target.value)}
-            max={formatDate(today)}
+            max={todayStr}
             style={{ margin: "0 8px", padding: "4px 8px", borderRadius: "4px", border: "1px solid #ddd" }}
           />
           ~
@@ -165,7 +166,7 @@ function App() {
             type="date"
             value={end}
             onChange={e => setEnd(e.target.value)}
-            max={formatDate(today)}
+            max={todayStr}
             min={start}
             style={{ margin: "0 8px", padding: "4px 8px", borderRadius: "4px", border: "1px solid #ddd" }}
           />
@@ -181,7 +182,7 @@ function App() {
 
 
 
-        {statistics.총문의수 && (
+        {statistics && (
           <div style={{
             backgroundColor: "#f8f9fa",
             padding: "16px",
