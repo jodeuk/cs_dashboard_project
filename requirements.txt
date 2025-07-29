@@ -4,4 +4,5 @@ pandas
 httpx
 python-dotenv
 openpyxl
-xlrd 
+xlrd
+python-multipart 
