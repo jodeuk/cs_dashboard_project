@@ -87,6 +87,7 @@ const CsatUploadSection = ({ onUploadSuccess }) => {
         </p>
         <p style={{ margin: '0 0 8px 0', fontSize: '12px', color: '#999' }}>
           • 지원 형식: .xlsx, .xls<br/>
+          • 첫 번째 시트의 데이터만 사용됩니다<br/>
           • firstAskedAt 컬럼이 포함되어야 합니다<br/>
           • A-1, A-2, A-4, A-5: 점수 컬럼 (1-5 범위)<br/>
           • A-3, A-6: 텍스트 응답 컬럼

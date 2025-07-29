@@ -350,9 +350,9 @@ async def upload_csat_file(file: UploadFile = File(...)):
         # 파일 내용 읽기
         content = await file.read()
         
-        # Excel 파일을 DataFrame으로 변환
+        # Excel 파일을 DataFrame으로 변환 (첫 번째 시트만 사용)
         try:
-            df = pd.read_excel(io.BytesIO(content))
+            df = pd.read_excel(io.BytesIO(content), sheet_name=0)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Excel 파일 읽기 실패: {str(e)}")
         
