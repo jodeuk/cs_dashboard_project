@@ -61,6 +61,60 @@ async def health():
 async def test():
     return {"message": "API is working!"}
 
+@app.get("/api/debug-channel-api")
+async def debug_channel_api():
+    """Channel Talk API 상세 디버깅"""
+    try:
+        # 환경변수 확인
+        access_key = os.environ.get("CHANNEL_ACCESS_TOKEN")
+        
+        if not access_key:
+            return {
+                "status": "error",
+                "message": "CHANNEL_ACCESS_TOKEN not found",
+                "access_key_exists": False
+            }
+        
+        # API 설정 정보
+        api_info = {
+            "base_url": channel_api.base_url,
+            "access_key_length": len(access_key),
+            "access_key_prefix": access_key[:10] + "..." if len(access_key) > 10 else access_key,
+            "headers": {
+                "Authorization": "Bearer ***",
+                "Content-Type": "application/json"
+            }
+        }
+        
+        # 테스트 API 호출
+        try:
+            # 작은 범위로 테스트
+            test_data = await channel_api.get_userchats("2024-12-01", "2024-12-31", limit=1)
+            
+            return {
+                "status": "success",
+                "api_info": api_info,
+                "test_result": {
+                    "data_count": len(test_data) if test_data else 0,
+                    "has_data": bool(test_data),
+                    "sample_item": test_data[0] if test_data else None
+                }
+            }
+        except Exception as api_error:
+            return {
+                "status": "api_error",
+                "api_info": api_info,
+                "error": str(api_error),
+                "error_type": type(api_error).__name__
+            }
+            
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "error_type": type(e).__name__
+        }
+
 @app.get("/api/test-channel-api")
 async def test_channel_api():
     """Channel Talk API 연결 테스트"""
@@ -78,13 +132,17 @@ async def test_channel_api():
             "access_key_exists": bool(access_key),
             "access_key_length": len(access_key) if access_key else 0,
             "data_count": len(test_data) if test_data else 0,
-            "sample_data": test_data[:2] if test_data else []
+            "sample_data": test_data[:2] if test_data else [],
+            "api_url": f"{channel_api.base_url}/open/v5/user-chats",
+            "headers": {"Authorization": "Bearer ***", "Content-Type": "application/json"}
         }
     except Exception as e:
         return {
             "status": "error",
             "error": str(e),
-            "access_key_exists": bool(os.environ.get("CHANNEL_ACCESS_TOKEN"))
+            "error_type": type(e).__name__,
+            "access_key_exists": bool(os.environ.get("CHANNEL_ACCESS_TOKEN")),
+            "api_url": f"{channel_api.base_url}/open/v5/user-chats"
         }
 
 # 4-1. 필터 옵션 제공

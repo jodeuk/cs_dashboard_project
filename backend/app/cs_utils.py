@@ -22,17 +22,59 @@ class ChannelTalkAPI:
         if not self.access_key:
             raise ValueError("CHANNEL_ACCESS_TOKEN 환경변수가 설정되지 않았습니다.")
         
-        url = f"{self.base_url}/openapi/v5/userchats"
+        # 올바른 API 엔드포인트 사용
+        url = f"{self.base_url}/open/v5/user-chats"
+        
+        # 날짜를 Unix timestamp로 변환 (마이크로초 단위)
+        start_timestamp = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp() * 1000000)
+        end_timestamp = int(datetime.strptime(end_date, "%Y-%m-%d").timestamp() * 1000000)
+        
         params = {
-            "startDate": start_date,
-            "endDate": end_date,
-            "limit": limit
+            "startAt": start_timestamp,
+            "endAt": end_timestamp,
+            "limit": limit,
+            "sortOrder": "desc"
         }
         
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=self.headers, params=params)
-            response.raise_for_status()
-            return response.json()
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, headers=self.headers, params=params)
+                response.raise_for_status()
+                data = response.json()
+                
+                # API 응답 구조에 맞게 처리
+                if "userChats" in data:
+                    return data["userChats"]
+                elif isinstance(data, list):
+                    return data
+                else:
+                    return []
+                    
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP Error: {e.response.status_code} - {e.response.text}")
+            raise
+        except Exception as e:
+            print(f"API 호출 중 오류 발생: {str(e)}")
+            raise
+
+    async def get_userchat_by_id(self, userchat_id: str) -> Dict:
+        """특정 UserChat ID로 상세 정보를 가져옵니다."""
+        if not self.access_key:
+            raise ValueError("CHANNEL_ACCESS_TOKEN 환경변수가 설정되지 않았습니다.")
+        
+        url = f"{self.base_url}/open/v5/user-chats/{userchat_id}"
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, headers=self.headers)
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP Error: {e.response.status_code} - {e.response.text}")
+            raise
+        except Exception as e:
+            print(f"API 호출 중 오류 발생: {str(e)}")
+            raise
 
     async def get_user_events(self, user_id: str, since: Optional[int] = None, limit: int = 25) -> Dict:
         """Channel Talk API에서 사용자 이벤트 데이터를 가져옵니다."""
@@ -48,10 +90,17 @@ class ChannelTalkAPI:
         if since:
             params["since"] = since
         
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=self.headers, params=params)
-            response.raise_for_status()
-            return response.json()
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, headers=self.headers, params=params)
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP Error: {e.response.status_code} - {e.response.text}")
+            raise
+        except Exception as e:
+            print(f"API 호출 중 오류 발생: {str(e)}")
+            raise
 
     async def get_all_user_events(self, user_ids: List[str], since: Optional[int] = None) -> List[Dict]:
         """여러 사용자의 이벤트 데이터를 병렬로 가져옵니다."""
@@ -103,24 +152,48 @@ class ChannelTalkAPI:
         processed_data = []
         
         for item in data:
-            tags = item.get("tags", [])
+            # API 응답 구조에 맞게 수정
+            userchat = item.get("userChat", item)  # userChat 키가 있으면 사용, 없으면 item 자체
+            user = item.get("user", {})
+            
+            tags = userchat.get("tags", [])
             processed_item = {
-                "userId": item.get("userId"),
-                "mediumType": item.get("mediumType"),
-                "workflow": item.get("workflow"),
+                "userId": userchat.get("userId"),
+                "userChatId": userchat.get("id"),
+                "channelId": userchat.get("channelId"),
+                "state": userchat.get("state"),
+                "managed": userchat.get("managed"),
+                "name": userchat.get("name"),
+                "description": userchat.get("description"),
+                "assigneeId": userchat.get("assigneeId"),
+                "teamId": userchat.get("teamId"),
                 "tags": tags,
-                "chats": item.get("chats", []),
-                "createdAt": item.get("createdAt"),
-                "firstAskedAt": item.get("firstAskedAt"),
-                "operationWaitingTime": item.get("operationWaitingTime"),
-                "operationAvgReplyTime": item.get("operationAvgReplyTime"),
-                "operationTotalReplyTime": item.get("operationTotalReplyTime"),
-                "operationResolutionTime": item.get("operationResolutionTime"),
-                "서비스유형": self.extract_level(tags, "서비스유형", 1),
-                "서비스유형_2차": self.extract_level(tags, "서비스유형", 2),
+                "createdAt": userchat.get("createdAt"),
+                "firstOpenedAt": userchat.get("firstOpenedAt"),
+                "openedAt": userchat.get("openedAt"),
+                "closedAt": userchat.get("closedAt"),
+                "firstAskedAt": userchat.get("firstAskedAt"),
+                "askedAt": userchat.get("askedAt"),
+                "firstRepliedAtAfterOpen": userchat.get("firstRepliedAtAfterOpen"),
+                "waitingTime": userchat.get("waitingTime", 0),
+                "avgReplyTime": userchat.get("avgReplyTime", 0),
+                "totalReplyTime": userchat.get("totalReplyTime", 0),
+                "replyCount": userchat.get("replyCount", 0),
+                "resolutionTime": userchat.get("resolutionTime", 0),
+                "goalState": userchat.get("goalState"),
+                "goalEventName": userchat.get("goalEventName"),
+                # User 정보
+                "userName": user.get("name"),
+                "userEmail": user.get("email"),
+                "userMobileNumber": user.get("mobileNumber"),
+                "userType": user.get("type"),
+                "userMemberId": user.get("memberId"),
+                # 태그에서 추출
                 "고객유형": self.extract_level(tags, "고객유형", 1),
                 "문의유형": self.extract_level(tags, "문의유형", 1),
+                "서비스유형": self.extract_level(tags, "서비스유형", 1),
                 "문의유형_2차": self.extract_level(tags, "문의유형", 2),
+                "서비스유형_2차": self.extract_level(tags, "서비스유형", 2),
             }
             processed_data.append(processed_item)
         
