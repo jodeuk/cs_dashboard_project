@@ -10,8 +10,8 @@ import sys
 # backend 디렉토리를 Python 경로에 추가
 sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
 
-# 실제 API 앱을 import
-from app.main import app
+# 실제 API 앱을 import (올바른 경로 사용)
+from backend.app.main import app
 
 # 이 파일이 직접 실행될 때만 실행
 if __name__ == "__main__":
