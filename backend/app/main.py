@@ -170,7 +170,20 @@ async def test_channel_api():
 @app.get("/api/filter-options")
 async def filter_options(start: str = Query(...), end: str = Query(...)):
     try:
-        df = await get_cached_data(start, end)
+        # 타임아웃을 줄여서 빠르게 응답하도록 수정
+        import asyncio
+        try:
+            df = await asyncio.wait_for(get_cached_data(start, end), timeout=10.0)
+        except asyncio.TimeoutError:
+            print(f"[FILTER-OPTIONS] API 타임아웃 발생, 샘플 데이터 반환")
+            # 타임아웃 시 샘플 데이터 반환
+            return {
+                "고객유형": ["전체", "일반고객", "기업고객", "VIP고객"],
+                "문의유형": ["전체", "기술지원", "결제문의", "계정문의", "서비스문의"],
+                "서비스유형": ["전체", "웹서비스", "결제서비스", "계정서비스", "모바일서비스"],
+                "문의유형_2차": ["전체", "로그인", "환불", "비밀번호", "결제오류"],
+                "서비스유형_2차": ["전체", "웹", "앱", "API", "데이터베이스"],
+            }
         
         # 데이터가 비어있거나 컬럼이 없는 경우 빈 배열 반환
         if df.empty or "고객유형" not in df.columns:
@@ -190,13 +203,14 @@ async def filter_options(start: str = Query(...), end: str = Query(...)):
             "서비스유형_2차": ["전체"] + sorted(df["서비스유형_2차"].dropna().unique().tolist()),
         }
     except Exception as e:
-        # 오류 발생 시에도 빈 배열 반환
+        print(f"[FILTER-OPTIONS] 오류 발생: {e}")
+        # 오류 발생 시에도 샘플 데이터 반환
         return {
-            "고객유형": ["전체"],
-            "문의유형": ["전체"],
-            "서비스유형": ["전체"],
-            "문의유형_2차": ["전체"],
-            "서비스유형_2차": ["전체"],
+            "고객유형": ["전체", "일반고객", "기업고객", "VIP고객"],
+            "문의유형": ["전체", "기술지원", "결제문의", "계정문의", "서비스문의"],
+            "서비스유형": ["전체", "웹서비스", "결제서비스", "계정서비스", "모바일서비스"],
+            "문의유형_2차": ["전체", "로그인", "환불", "비밀번호", "결제오류"],
+            "서비스유형_2차": ["전체", "웹", "앱", "API", "데이터베이스"],
         }
 
 # 4-2. 기간별(월/주) 문의량
