@@ -5,7 +5,7 @@ services:
     buildCommand: pip install -r requirements.txt
     envVars:
       - key: CHANNEL_ACCESS_TOKEN
-        value: 688702bd14ed5ca81e4b
+        value: 68883a95c1c0f08306f3
       - key: PORT
         value: 10000
     autoDeploy: true 
