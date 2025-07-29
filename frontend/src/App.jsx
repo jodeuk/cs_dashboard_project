@@ -48,6 +48,40 @@ function App() {
     checkApiHealth().then(setApiConnected);
   }, []);
 
+  // 사용자 ID 필드 제거
+  useEffect(() => {
+    const removeUserIdField = () => {
+      const labels = document.querySelectorAll('label');
+      labels.forEach(label => {
+        if (label.textContent.includes('사용자 ID') || label.textContent.includes('이벤트 분석용')) {
+          const parentDiv = label.closest('div');
+          if (parentDiv) {
+            parentDiv.style.display = 'none';
+          }
+        }
+      });
+      
+      const inputs = document.querySelectorAll('input[type="text"]');
+      inputs.forEach(input => {
+        if (input.placeholder && input.placeholder.includes('사용자 ID')) {
+          const parentDiv = input.closest('div');
+          if (parentDiv) {
+            parentDiv.style.display = 'none';
+          }
+        }
+      });
+    };
+
+    // DOM이 로드된 후 실행
+    setTimeout(removeUserIdField, 100);
+    
+    // MutationObserver로 동적으로 추가되는 요소도 감지
+    const observer = new MutationObserver(removeUserIdField);
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    return () => observer.disconnect();
+  }, []);
+
   // 필터 옵션 불러오기
   useEffect(() => {
     if (!apiConnected) return;
@@ -125,6 +159,16 @@ function App() {
 
   return (
     <div style={{ padding: 32, fontFamily: "sans-serif", backgroundColor: "#f5f5f5", minHeight: "100vh" }}>
+      {/* 사용자 ID 필드 숨기기 */}
+      <style>
+        {`
+          label:contains("사용자 ID"), 
+          input[placeholder*="사용자 ID"],
+          div:has(label:contains("사용자 ID")) {
+            display: none !important;
+          }
+        `}
+      </style>
       <div style={{ maxWidth: "1200px", margin: "0 auto" }}>
         <h1 style={{ textAlign: "center", color: "#333", marginBottom: "32px" }}>
           📊 CS 대시보드
