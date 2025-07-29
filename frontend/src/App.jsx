@@ -19,14 +19,16 @@ function App() {
   const [filterOptions, setFilterOptions] = useState({});
   const [filterVals, setFilterVals] = useState({});
   const [dateGroup, setDateGroup] = useState("월간");
-  // 날짜 초기값 설정 (첨부 파일 참고)
+  // 날짜 초기값 설정 (CS_dashboard0725.py 참고)
   const today = new Date();
   const oneMonthAgo = new Date(today.getFullYear(), today.getMonth() - 1, today.getDate());
   
   const formatDate = (date) => date.toISOString().split('T')[0];
   const todayStr = formatDate(today);
+  const oneMonthAgoStr = formatDate(oneMonthAgo);
   
-  const [start, setStart] = useState(formatDate(oneMonthAgo));
+  // CS_dashboard0725.py 방식: 데이터가 있으면 실제 범위, 없으면 기본값
+  const [start, setStart] = useState(oneMonthAgoStr);
   const [end, setEnd] = useState(todayStr);
 
   // 데이터 상태
@@ -157,7 +159,14 @@ function App() {
           <input
             type="date"
             value={start}
-            onChange={e => setStart(e.target.value)}
+            onChange={e => {
+              const newStart = e.target.value;
+              setStart(newStart);
+              // 시작일이 종료일보다 늦으면 종료일을 시작일로 설정
+              if (newStart > end) {
+                setEnd(newStart);
+              }
+            }}
             max={todayStr}
             style={{ margin: "0 8px", padding: "4px 8px", borderRadius: "4px", border: "1px solid #ddd" }}
           />
@@ -165,7 +174,13 @@ function App() {
           <input
             type="date"
             value={end}
-            onChange={e => setEnd(e.target.value)}
+            onChange={e => {
+              const newEnd = e.target.value;
+              // 오늘 이후 날짜는 선택 불가
+              if (newEnd <= todayStr) {
+                setEnd(newEnd);
+              }
+            }}
             max={todayStr}
             min={start}
             style={{ margin: "0 8px", padding: "4px 8px", borderRadius: "4px", border: "1px solid #ddd" }}

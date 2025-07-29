@@ -181,7 +181,7 @@ async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
         return df
     except Exception as e:
         print(f"데이터 로드 실패: {e}")
-        # 기본 샘플 데이터 제공
+        # 기본 샘플 데이터 제공 (CS_dashboard0725.py 참고)
         sample_data = [
             {
                 "userId": "sample_user_1",
@@ -212,6 +212,36 @@ async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
                 "operationTotalReplyTime": 1200,
                 "operationResolutionTime": 2400,
                 "chats": ["환불 요청합니다", "결제 취소 부탁드립니다"]
+            },
+            {
+                "userId": "sample_user_3",
+                "userChatId": "sample_chat_3",
+                "firstAskedAt": "2025-06-25T09:15:00Z",
+                "고객유형": "일반고객",
+                "문의유형": "계정문의",
+                "서비스유형": "계정서비스",
+                "문의유형_2차": "비밀번호변경",
+                "서비스유형_2차": "계정관리",
+                "operationWaitingTime": 120,
+                "operationAvgReplyTime": 300,
+                "operationTotalReplyTime": 900,
+                "operationResolutionTime": 1800,
+                "chats": ["비밀번호를 변경하고 싶습니다", "이메일 인증이 안됩니다"]
+            },
+            {
+                "userId": "sample_user_4",
+                "userChatId": "sample_chat_4",
+                "firstAskedAt": "2025-06-28T16:45:00Z",
+                "고객유형": "기업고객",
+                "문의유형": "기술지원",
+                "서비스유형": "API서비스",
+                "문의유형_2차": "연동문제",
+                "서비스유형_2차": "개발지원",
+                "operationWaitingTime": 600,
+                "operationAvgReplyTime": 900,
+                "operationTotalReplyTime": 2700,
+                "operationResolutionTime": 5400,
+                "chats": ["API 연동에 문제가 있습니다", "인증 토큰이 만료되었습니다"]
             }
         ]
         return pd.DataFrame(sample_data)
