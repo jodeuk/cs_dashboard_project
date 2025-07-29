@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 
+const API_BASE = process.env.REACT_APP_API_BASE || "https://cs-dashboard-project.onrender.com/api";
+
 const CsatUploadSection = ({ onUploadSuccess }) => {
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
@@ -50,7 +52,7 @@ const CsatUploadSection = ({ onUploadSuccess }) => {
 
           console.log('Uploading file:', file.name, 'Type:', fileType, 'Size:', base64Data.length);
 
-          const response = await fetch('/api/upload-csat', {
+          const response = await fetch(`${API_BASE}/upload-csat`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
