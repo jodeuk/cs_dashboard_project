@@ -3,7 +3,9 @@ services:
     name: cs-dashboard-backend
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: python main.py
     envVars:
       - key: CHANNEL_ACCESS_TOKEN
-        value: 688702bd14ed5ca81e4b 
+        value: 688702bd14ed5ca81e4b
+      - key: PORT
+        value: 10000 
