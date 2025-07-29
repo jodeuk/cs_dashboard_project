@@ -66,13 +66,15 @@ async def debug_channel_api():
     """Channel Talk API 상세 디버깅"""
     try:
         # 환경변수 확인
-        access_key = os.environ.get("CHANNEL_ACCESS_TOKEN")
+        access_key = os.environ.get("CHANNEL_ACCESS_KEY")
+        access_secret = os.environ.get("CHANNEL_ACCESS_SECRET")
         
-        if not access_key:
+        if not access_key or not access_secret:
             return {
                 "status": "error",
-                "message": "CHANNEL_ACCESS_TOKEN not found",
-                "access_key_exists": False
+                "message": "CHANNEL_ACCESS_KEY 또는 CHANNEL_ACCESS_SECRET not found",
+                "access_key_exists": bool(access_key),
+                "access_secret_exists": bool(access_secret)
             }
         
         # API 설정 정보
@@ -80,8 +82,11 @@ async def debug_channel_api():
             "base_url": channel_api.base_url,
             "access_key_length": len(access_key),
             "access_key_prefix": access_key[:10] + "..." if len(access_key) > 10 else access_key,
+            "access_secret_length": len(access_secret),
+            "access_secret_prefix": access_secret[:10] + "..." if len(access_secret) > 10 else access_secret,
             "headers": {
-                "Authorization": "Bearer ***",
+                "x-access-key": "***",
+                "x-access-secret": "***",
                 "Content-Type": "application/json"
             }
         }
@@ -120,9 +125,10 @@ async def test_channel_api():
     """Channel Talk API 연결 테스트"""
     try:
         # 환경변수 확인
-        access_key = os.environ.get("CHANNEL_ACCESS_TOKEN")
-        if not access_key:
-            return {"error": "CHANNEL_ACCESS_TOKEN not found", "status": "failed"}
+        access_key = os.environ.get("CHANNEL_ACCESS_KEY")
+        access_secret = os.environ.get("CHANNEL_ACCESS_SECRET")
+        if not access_key or not access_secret:
+            return {"error": "CHANNEL_ACCESS_KEY 또는 CHANNEL_ACCESS_SECRET not found", "status": "failed"}
         
         # API 클라이언트 테스트
         test_data = await channel_api.get_userchats("2024-01-01", "2024-01-31", limit=5)
@@ -130,18 +136,21 @@ async def test_channel_api():
         return {
             "status": "success",
             "access_key_exists": bool(access_key),
+            "access_secret_exists": bool(access_secret),
             "access_key_length": len(access_key) if access_key else 0,
+            "access_secret_length": len(access_secret) if access_secret else 0,
             "data_count": len(test_data) if test_data else 0,
             "sample_data": test_data[:2] if test_data else [],
             "api_url": f"{channel_api.base_url}/open/v5/user-chats",
-            "headers": {"Authorization": "Bearer ***", "Content-Type": "application/json"}
+            "headers": {"x-access-key": "***", "x-access-secret": "***", "Content-Type": "application/json"}
         }
     except Exception as e:
         return {
             "status": "error",
             "error": str(e),
             "error_type": type(e).__name__,
-            "access_key_exists": bool(os.environ.get("CHANNEL_ACCESS_TOKEN")),
+            "access_key_exists": bool(os.environ.get("CHANNEL_ACCESS_KEY")),
+            "access_secret_exists": bool(os.environ.get("CHANNEL_ACCESS_SECRET")),
             "api_url": f"{channel_api.base_url}/open/v5/user-chats"
         }
 
@@ -386,4 +395,14 @@ async def get_user_events(
         events = await channel_api.get_user_events(user_id, since, limit)
         return events
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"사용자 이벤트 조회 실패: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"사용자 이벤트 조회 실패: {str(e)}")
+
+# 4-11. 특정 UserChat 조회
+@app.get("/api/user-chat/{userchat_id}")
+async def get_user_chat(userchat_id: str):
+    """특정 UserChat ID로 상세 정보를 조회합니다."""
+    try:
+        userchat_data = await channel_api.get_userchat_by_id(userchat_id)
+        return userchat_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"UserChat 조회 실패: {str(e)}") 

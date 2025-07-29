@@ -11,16 +11,20 @@ load_dotenv()
 class ChannelTalkAPI:
     def __init__(self):
         self.base_url = "https://api.channel.io"
-        self.access_key = os.getenv("CHANNEL_ACCESS_TOKEN")
+        self.access_key = os.getenv("CHANNEL_ACCESS_KEY")
+        self.access_secret = os.getenv("CHANNEL_ACCESS_SECRET")
+        
+        # 올바른 인증 헤더 설정 (x-access-key, x-access-secret 사용)
         self.headers = {
-            "Authorization": f"Bearer {self.access_key}",
+            "x-access-key": self.access_key,
+            "x-access-secret": self.access_secret,
             "Content-Type": "application/json"
         }
 
     async def get_userchats(self, start_date: str, end_date: str, limit: int = 100) -> List[Dict]:
         """Channel Talk API에서 UserChat 데이터를 가져옵니다."""
-        if not self.access_key:
-            raise ValueError("CHANNEL_ACCESS_TOKEN 환경변수가 설정되지 않았습니다.")
+        if not self.access_key or not self.access_secret:
+            raise ValueError("CHANNEL_ACCESS_KEY 또는 CHANNEL_ACCESS_SECRET 환경변수가 설정되지 않았습니다.")
         
         # 올바른 API 엔드포인트 사용
         url = f"{self.base_url}/open/v5/user-chats"
@@ -59,8 +63,8 @@ class ChannelTalkAPI:
 
     async def get_userchat_by_id(self, userchat_id: str) -> Dict:
         """특정 UserChat ID로 상세 정보를 가져옵니다."""
-        if not self.access_key:
-            raise ValueError("CHANNEL_ACCESS_TOKEN 환경변수가 설정되지 않았습니다.")
+        if not self.access_key or not self.access_secret:
+            raise ValueError("CHANNEL_ACCESS_KEY 또는 CHANNEL_ACCESS_SECRET 환경변수가 설정되지 않았습니다.")
         
         url = f"{self.base_url}/open/v5/user-chats/{userchat_id}"
         
@@ -78,8 +82,8 @@ class ChannelTalkAPI:
 
     async def get_user_events(self, user_id: str, since: Optional[int] = None, limit: int = 25) -> Dict:
         """Channel Talk API에서 사용자 이벤트 데이터를 가져옵니다."""
-        if not self.access_key:
-            raise ValueError("CHANNEL_ACCESS_TOKEN 환경변수가 설정되지 않았습니다.")
+        if not self.access_key or not self.access_secret:
+            raise ValueError("CHANNEL_ACCESS_KEY 또는 CHANNEL_ACCESS_SECRET 환경변수가 설정되지 않았습니다.")
         
         url = f"{self.base_url}/open/v5/users/{user_id}/events"
         params = {
