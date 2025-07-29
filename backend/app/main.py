@@ -340,7 +340,14 @@ async def get_statistics(start: str = Query(...), end: str = Query(...)):
         start_date = pd.to_datetime(start)
         end_date = pd.to_datetime(end)
         
+        print(f"[STATISTICS] 전체 데이터 수: {len(df)}")
+        print(f"[STATISTICS] 시작 날짜: {start_date}")
+        print(f"[STATISTICS] 종료 날짜: {end_date}")
+        print(f"[STATISTICS] firstAskedAt 범위: {df['firstAskedAt'].min()} ~ {df['firstAskedAt'].max()}")
+        
         temp = df[(df['firstAskedAt'] >= start_date) & (df['firstAskedAt'] <= end_date)]
+        
+        print(f"[STATISTICS] 필터링 후 데이터 수: {len(temp)}")
         
         # NaN 값을 안전하게 처리하는 함수
         def safe_mean(series):
