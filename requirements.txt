@@ -4,5 +4,4 @@ pandas
 httpx
 python-dotenv
 openpyxl
-xlrd
-python-multipart==0.0.6 
+xlrd 

@@ -35,36 +35,67 @@ const CsatUploadSection = ({ onUploadSuccess }) => {
     setUploadStatus(null);
 
     try {
-      const formData = new FormData();
-      formData.append('file', file);
+      // 파일을 Base64로 인코딩
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        try {
+          const base64Data = e.target.result.split(',')[1]; // "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64," 부분 제거
+          const fileType = file.name.endsWith('.xlsx') ? 'xlsx' : 'xls';
+          
+          const uploadData = {
+            filename: file.name,
+            file_data: base64Data,
+            file_type: fileType
+          };
 
-      const response = await fetch('/api/upload-csat', {
-        method: 'POST',
-        body: formData,
-      });
+          const response = await fetch('/api/upload-csat', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(uploadData),
+          });
 
-      const result = await response.json();
+          const result = await response.json();
 
-      if (response.ok) {
-        setUploadStatus({
-          type: 'success',
-          message: `${result.message} (${result.rows}행, ${result.columns.length}컬럼)`
-        });
-        if (onUploadSuccess) {
-          onUploadSuccess();
+          if (response.ok && result.status === 'success') {
+            setUploadStatus({
+              type: 'success',
+              message: `${result.message} (${result.data_count}건, ${result.columns.length}컬럼)`
+            });
+            if (onUploadSuccess) {
+              onUploadSuccess();
+            }
+          } else {
+            setUploadStatus({
+              type: 'error',
+              message: result.message || '업로드에 실패했습니다.'
+            });
+          }
+        } catch (error) {
+          setUploadStatus({
+            type: 'error',
+            message: `업로드 중 오류가 발생했습니다: ${error.message}`
+          });
+        } finally {
+          setUploading(false);
         }
-      } else {
+      };
+
+      reader.onerror = () => {
         setUploadStatus({
           type: 'error',
-          message: result.detail || '업로드에 실패했습니다.'
+          message: '파일 읽기에 실패했습니다.'
         });
-      }
+        setUploading(false);
+      };
+
+      reader.readAsDataURL(file);
     } catch (error) {
       setUploadStatus({
         type: 'error',
         message: `업로드 중 오류가 발생했습니다: ${error.message}`
       });
-    } finally {
       setUploading(false);
     }
   };

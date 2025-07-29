@@ -1,12 +1,14 @@
 import os
 import re
-from fastapi import FastAPI, Query, HTTPException, File, UploadFile
+import base64
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import pandas as pd
 from datetime import datetime
 from typing import Optional
 import io
+from pydantic import BaseModel
 from .cs_utils import get_cached_data, get_filtered_df, channel_api
 
 # ---- 1. FastAPI 기본 셋업 ----
@@ -24,6 +26,12 @@ FONT_PATH = os.environ.get("FONT_PATH", "/usr/share/fonts/truetype/nanum/NanumGo
 
 # CSAT 데이터 저장소
 _csat_data = None
+
+# ---- 2-1. Pydantic 모델 ----
+class CSATFileUpload(BaseModel):
+    filename: str
+    file_data: str  # Base64 encoded file data
+    file_type: str  # "xlsx" or "xls"
 
 # ---- 3. Stopwords/필터 ----
 stopwords = [
@@ -378,26 +386,38 @@ async def get_user_chat(userchat_id: str):
 
 # 4-9. CSAT Excel 파일 업로드 (임시 비활성화)
 @app.post("/api/upload-csat")
-async def upload_csat_file(file: UploadFile = File(...)):
-    """CSAT Excel 파일을 업로드하고 분석 데이터를 저장합니다."""
+async def upload_csat_file(file_upload: CSATFileUpload):
+    """CSAT Excel 파일을 Base64로 업로드하고 분석 데이터를 저장합니다."""
     global _csat_data
     
     try:
         # 파일 확장자 확인
-        if not file.filename.endswith(('.xlsx', '.xls')):
+        if file_upload.file_type not in ['xlsx', 'xls']:
             return {
                 "message": "지원하지 않는 파일 형식입니다. .xlsx 또는 .xls 파일을 업로드해주세요.",
                 "status": "error"
             }
         
-        # 파일 내용 읽기
-        content = await file.read()
+        # Base64 디코딩
+        try:
+            file_content = base64.b64decode(file_upload.file_data)
+        except Exception as e:
+            return {
+                "message": f"파일 디코딩에 실패했습니다: {str(e)}",
+                "status": "error"
+            }
         
         # Excel 파일 읽기
-        if file.filename.endswith('.xlsx'):
-            df = pd.read_excel(io.BytesIO(content), sheet_name=0)
-        else:  # .xls
-            df = pd.read_excel(io.BytesIO(content), sheet_name=0, engine='xlrd')
+        try:
+            if file_upload.file_type == 'xlsx':
+                df = pd.read_excel(io.BytesIO(file_content), sheet_name=0)
+            else:  # xls
+                df = pd.read_excel(io.BytesIO(file_content), sheet_name=0, engine='xlrd')
+        except Exception as e:
+            return {
+                "message": f"Excel 파일 읽기에 실패했습니다: {str(e)}",
+                "status": "error"
+            }
         
         # firstAskedAt 컬럼 확인
         if 'firstAskedAt' not in df.columns:
