@@ -119,7 +119,19 @@ class ChannelTalkAPI:
             
             tags = userchat.get("tags", [])
             processed_item = {
+                # 실제 데이터 구조에 맞춘 키들
                 "userId": userchat.get("userId"),
+                "mediumType": userchat.get("mediumType"),
+                "workflow": userchat.get("workflow"),
+                "tags": tags,
+                "chats": userchat.get("chats", []),
+                "firstAskedAt": userchat.get("firstAskedAt"),
+                # operation이 붙은 키들 (우리가 사용할 키들)
+                "operationWaitingTime": userchat.get("operationWaitingTime", 0),
+                "operationAvgReplyTime": userchat.get("operationAvgReplyTime", 0),
+                "operationTotalReplyTime": userchat.get("operationTotalReplyTime", 0),
+                "operationResolutionTime": userchat.get("operationResolutionTime", 0),
+                # 추가 정보들
                 "userChatId": userchat.get("id"),
                 "channelId": userchat.get("channelId"),
                 "state": userchat.get("state"),
@@ -128,19 +140,12 @@ class ChannelTalkAPI:
                 "description": userchat.get("description"),
                 "assigneeId": userchat.get("assigneeId"),
                 "teamId": userchat.get("teamId"),
-                "tags": tags,
-                "createdAt": userchat.get("createdAt"),
                 "firstOpenedAt": userchat.get("firstOpenedAt"),
                 "openedAt": userchat.get("openedAt"),
                 "closedAt": userchat.get("closedAt"),
-                "firstAskedAt": userchat.get("firstAskedAt"),
                 "askedAt": userchat.get("askedAt"),
                 "firstRepliedAtAfterOpen": userchat.get("firstRepliedAtAfterOpen"),
-                "waitingTime": userchat.get("waitingTime", 0),
-                "avgReplyTime": userchat.get("avgReplyTime", 0),
-                "totalReplyTime": userchat.get("totalReplyTime", 0),
                 "replyCount": userchat.get("replyCount", 0),
-                "resolutionTime": userchat.get("resolutionTime", 0),
                 "goalState": userchat.get("goalState"),
                 "goalEventName": userchat.get("goalEventName"),
                 # User 정보
@@ -181,66 +186,58 @@ async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
         return df
     except Exception as e:
         print(f"데이터 로드 실패: {e}")
-        # 기본 샘플 데이터 제공 (CS_dashboard0725.py 참고)
+        # 실제 데이터 구조에 맞춘 샘플 데이터
         sample_data = [
             {
                 "userId": "sample_user_1",
-                "userChatId": "sample_chat_1",
-                "firstAskedAt": "2025-06-15T10:00:00Z",
-                "고객유형": "일반고객",
-                "문의유형": "기술지원",
-                "서비스유형": "웹서비스",
-                "문의유형_2차": "로그인문제",
-                "서비스유형_2차": "인증서비스",
+                "mediumType": "native",
+                "workflow": "support",
+                "tags": ["고객유형/일반고객", "문의유형/기술지원", "서비스유형/웹서비스"],
+                "firstAskedAt": "2025-06-15T10:00:00",
                 "operationWaitingTime": 300,
                 "operationAvgReplyTime": 600,
                 "operationTotalReplyTime": 1800,
                 "operationResolutionTime": 3600,
+                "cs_satisfaction": None,
                 "chats": ["안녕하세요", "로그인이 안됩니다", "도와주세요"]
             },
             {
                 "userId": "sample_user_2",
-                "userChatId": "sample_chat_2",
-                "firstAskedAt": "2025-06-20T14:30:00Z",
-                "고객유형": "기업고객",
-                "문의유형": "결제문의",
-                "서비스유형": "결제서비스",
-                "문의유형_2차": "환불요청",
-                "서비스유형_2차": "결제관리",
+                "mediumType": "native",
+                "workflow": "billing",
+                "tags": ["고객유형/기업고객", "문의유형/결제문의", "서비스유형/결제서비스"],
+                "firstAskedAt": "2025-06-20T14:30:00",
                 "operationWaitingTime": 180,
                 "operationAvgReplyTime": 450,
                 "operationTotalReplyTime": 1200,
                 "operationResolutionTime": 2400,
+                "cs_satisfaction": None,
                 "chats": ["환불 요청합니다", "결제 취소 부탁드립니다"]
             },
             {
                 "userId": "sample_user_3",
-                "userChatId": "sample_chat_3",
-                "firstAskedAt": "2025-06-25T09:15:00Z",
-                "고객유형": "일반고객",
-                "문의유형": "계정문의",
-                "서비스유형": "계정서비스",
-                "문의유형_2차": "비밀번호변경",
-                "서비스유형_2차": "계정관리",
+                "mediumType": "native",
+                "workflow": "account",
+                "tags": ["고객유형/일반고객", "문의유형/계정문의", "서비스유형/계정서비스"],
+                "firstAskedAt": "2025-06-25T09:15:00",
                 "operationWaitingTime": 120,
                 "operationAvgReplyTime": 300,
                 "operationTotalReplyTime": 900,
                 "operationResolutionTime": 1800,
+                "cs_satisfaction": None,
                 "chats": ["비밀번호를 변경하고 싶습니다", "이메일 인증이 안됩니다"]
             },
             {
                 "userId": "sample_user_4",
-                "userChatId": "sample_chat_4",
-                "firstAskedAt": "2025-06-28T16:45:00Z",
-                "고객유형": "기업고객",
-                "문의유형": "기술지원",
-                "서비스유형": "API서비스",
-                "문의유형_2차": "연동문제",
-                "서비스유형_2차": "개발지원",
+                "mediumType": "native",
+                "workflow": "technical",
+                "tags": ["고객유형/기업고객", "문의유형/기술지원", "서비스유형/API서비스"],
+                "firstAskedAt": "2025-06-28T16:45:00",
                 "operationWaitingTime": 600,
                 "operationAvgReplyTime": 900,
                 "operationTotalReplyTime": 2700,
                 "operationResolutionTime": 5400,
+                "cs_satisfaction": None,
                 "chats": ["API 연동에 문제가 있습니다", "인증 토큰이 만료되었습니다"]
             }
         ]
