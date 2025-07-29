@@ -1,6 +1,6 @@
 import os
 import re
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import pandas as pd
@@ -272,13 +272,15 @@ async def customer_type_cs(
         
         temp = df[(df['firstAskedAt'] >= start_date) & (df['firstAskedAt'] <= end_date)]
         
-        customer_counts = temp["고객유형"].value_counts().head(top_n)
+        # NaN 값을 안전하게 처리
+        customer_counts = temp["고객유형"].dropna().value_counts().head(top_n)
         data = []
         for customer_type, count in customer_counts.items():
-            data.append({
-                "고객유형": customer_type,
-                "문의량": int(count)
-            })
+            if pd.notna(customer_type):  # NaN 값 제외
+                data.append({
+                    "고객유형": str(customer_type),
+                    "문의량": int(count)
+                })
         
         return data
     except Exception as e:
@@ -332,13 +334,25 @@ async def get_statistics(start: str = Query(...), end: str = Query(...)):
         
         temp = df[(df['firstAskedAt'] >= start_date) & (df['firstAskedAt'] <= end_date)]
         
+        # NaN 값을 안전하게 처리하는 함수
+        def safe_mean(series):
+            if series.empty or series.isna().all():
+                return 0.0
+            mean_val = series.mean()
+            return float(mean_val) if pd.notna(mean_val) else 0.0
+        
+        def safe_nunique(series):
+            if series.empty:
+                return 0
+            return int(series.nunique())
+        
         return {
             "총문의수": len(temp),
-            "고객유형수": temp["고객유형"].nunique(),
-            "문의유형수": temp["문의유형"].nunique(),
-            "서비스유형수": temp["서비스유형"].nunique(),
-            "평균첫응답시간": float(temp["operationWaitingTime"].mean()) if "operationWaitingTime" in temp.columns else 0.0,
-            "평균응답시간": float(temp["operationAvgReplyTime"].mean()) if "operationAvgReplyTime" in temp.columns else 0.0
+            "고객유형수": safe_nunique(temp["고객유형"]) if "고객유형" in temp.columns else 0,
+            "문의유형수": safe_nunique(temp["문의유형"]) if "문의유형" in temp.columns else 0,
+            "서비스유형수": safe_nunique(temp["서비스유형"]) if "서비스유형" in temp.columns else 0,
+            "평균첫응답시간": safe_mean(temp["operationWaitingTime"]) if "operationWaitingTime" in temp.columns else 0.0,
+            "평균응답시간": safe_mean(temp["operationAvgReplyTime"]) if "operationAvgReplyTime" in temp.columns else 0.0
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"통계 조회 실패: {str(e)}")
@@ -364,12 +378,52 @@ async def get_user_chat(userchat_id: str):
 
 # 4-9. CSAT Excel 파일 업로드 (임시 비활성화)
 @app.post("/api/upload-csat")
-async def upload_csat_file():
-    """CSAT Excel 파일 업로드 기능이 임시로 비활성화되었습니다."""
-    return {
-        "message": "CSAT 파일 업로드 기능이 임시로 비활성화되었습니다. python-multipart 설치 문제 해결 후 다시 활성화됩니다.",
-        "status": "disabled"
-    }
+async def upload_csat_file(file: UploadFile = File(...)):
+    """CSAT Excel 파일을 업로드하고 분석 데이터를 저장합니다."""
+    global _csat_data
+    
+    try:
+        # 파일 확장자 확인
+        if not file.filename.endswith(('.xlsx', '.xls')):
+            return {
+                "message": "지원하지 않는 파일 형식입니다. .xlsx 또는 .xls 파일을 업로드해주세요.",
+                "status": "error"
+            }
+        
+        # 파일 내용 읽기
+        content = await file.read()
+        
+        # Excel 파일 읽기
+        if file.filename.endswith('.xlsx'):
+            df = pd.read_excel(io.BytesIO(content), sheet_name=0)
+        else:  # .xls
+            df = pd.read_excel(io.BytesIO(content), sheet_name=0, engine='xlrd')
+        
+        # firstAskedAt 컬럼 확인
+        if 'firstAskedAt' not in df.columns:
+            return {
+                "message": "firstAskedAt 컬럼이 없습니다. Excel 파일의 첫 번째 시트에 firstAskedAt 컬럼이 포함되어야 합니다.",
+                "status": "error"
+            }
+        
+        # NaN 값을 안전하게 처리
+        df = df.fillna('')
+        
+        # 데이터를 딕셔너리 리스트로 변환
+        _csat_data = df.to_dict(orient="records")
+        
+        return {
+            "message": f"CSAT 데이터가 성공적으로 업로드되었습니다. 총 {len(_csat_data)}건의 데이터가 저장되었습니다.",
+            "status": "success",
+            "data_count": len(_csat_data),
+            "columns": list(df.columns)
+        }
+        
+    except Exception as e:
+        return {
+            "message": f"파일 업로드 중 오류가 발생했습니다: {str(e)}",
+            "status": "error"
+        }
 
 # 4-10. CSAT 분석 데이터 조회
 @app.get("/api/csat-analysis")
