@@ -35,13 +35,9 @@ class ChannelTalkAPI:
         self.access_key = os.getenv("CHANNEL_ACCESS_TOKEN")
         self.access_secret = os.getenv("CHANNEL_ACCESS_SECRET")
         
-        # Basic Authentication 방식으로 변경
-        import base64
-        credentials = f"{self.access_key}:{self.access_secret}"
-        encoded_credentials = base64.b64encode(credentials.encode()).decode()
-        
+        # API Key만 사용하는 방식으로 변경
         self.headers = {
-            "Authorization": f"Basic {encoded_credentials}",
+            "X-Access-Key": self.access_key,
             "Content-Type": "application/json"
         }
 
@@ -50,14 +46,11 @@ class ChannelTalkAPI:
         if not self.access_key:
             raise ValueError("CHANNEL_ACCESS_TOKEN 환경변수가 설정되지 않았습니다.")
         
-        url = f"{self.base_url}/open/v5/user-chats"
-        
-        start_timestamp = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp() * 1000000)
-        end_timestamp = int(datetime.strptime(end_date, "%Y-%m-%d").timestamp() * 1000000)
+        url = f"{self.base_url}/openapi/v5/userchats"
         
         params = {
-            "startAt": start_timestamp,
-            "endAt": end_timestamp,
+            "startDate": start_date,
+            "endDate": end_date,
             "limit": limit,
             "sortOrder": "desc"
         }
@@ -118,7 +111,7 @@ async def debug_channel_api():
             "access_key_prefix": access_key[:10] + "..." if len(access_key) > 10 else access_key,
             "access_secret_exists": bool(channel_api.access_secret),
             "headers": {
-                "Authorization": "Basic ***",
+                "X-Access-Key": "***",
                 "Content-Type": "application/json"
             }
         }
