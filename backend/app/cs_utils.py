@@ -485,6 +485,7 @@ async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
                         print(f"[CACHE] 캐시 파일 검사: {cached_start} ~ {cached_end}")
                         
                         # 요청 범위가 캐시 범위에 포함되는지 확인
+                        print(f"[CACHE] 범위 비교: 요청({start_date}~{end_date}) vs 캐시({cached_start}~{cached_end})")
                         if cached_start <= start_date and cached_end >= end_date:
                             print(f"[CACHE] 적합한 캐시 발견: {cached_start} ~ {cached_end}")
                             cached_data, cached_metadata = server_cache.load_data(cache_key_from_file)
