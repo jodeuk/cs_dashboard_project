@@ -8,7 +8,20 @@ async function apiCall(endpoint, params = {}) {
   console.log(`🌐 API 호출: ${url}`);
 
   try {
-    const response = await fetch(url);
+    // 네트워크 상태 확인
+    if (!navigator.onLine) {
+      throw new Error('네트워크 연결이 없습니다.');
+    }
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      // 타임아웃 설정
+      signal: AbortSignal.timeout(30000) // 30초
+    });
+    
     console.log(`📡 응답 상태: ${response.status} ${response.statusText}`);
     
     if (!response.ok) {
@@ -27,7 +40,15 @@ async function apiCall(endpoint, params = {}) {
     return data;
   } catch (error) {
     console.error(`❌ API 호출 실패: ${endpoint}`, error);
-    throw error;
+    
+    // 더 자세한 에러 정보
+    if (error.name === 'AbortError') {
+      throw new Error('API 호출 시간 초과 (30초)');
+    } else if (error.message.includes('Failed to fetch')) {
+      throw new Error('서버에 연결할 수 없습니다. 네트워크 연결을 확인해주세요.');
+    } else {
+      throw error;
+    }
   }
 }
 
