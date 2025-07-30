@@ -8,6 +8,10 @@ from typing import List, Dict, Optional
 import asyncio
 from dotenv import load_dotenv
 
+# 절대경로로 캐시 디렉토리 설정
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))  # app/ 디렉토리
+CACHE_DIR = os.path.join(PROJECT_ROOT, '..', '..', 'cache')  # 프로젝트 루트/cache
+
 load_dotenv()
 
 class ChannelTalkAPI:
@@ -271,8 +275,14 @@ channel_api = ChannelTalkAPI()
 
 # 서버 캐시 시스템
 class ServerCache:
-    def __init__(self, cache_dir="cache"):
-        self.cache_dir = cache_dir
+    def __init__(self, cache_dir=None):
+        # 절대경로로 캐시 디렉토리 설정
+        if cache_dir is None:
+            project_root = os.path.dirname(os.path.abspath(__file__))  # app/ 디렉토리
+            self.cache_dir = os.path.join(project_root, '..', '..', 'cache')  # 프로젝트 루트/cache
+        else:
+            self.cache_dir = cache_dir
+        print(f"[CACHE] ServerCache 초기화 - 캐시 디렉토리: {os.path.abspath(self.cache_dir)}")
         self.ensure_cache_dir()
     
     def ensure_cache_dir(self):
