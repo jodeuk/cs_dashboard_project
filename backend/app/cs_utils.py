@@ -443,15 +443,20 @@ def get_filtered_df(df: pd.DataFrame, start: str, end: str,
     
     # 1. 날짜 필터링 (ISO 문자열 형식 처리)
     if 'firstAskedAt' in temp.columns:
-        # ISO 문자열을 datetime으로 변환
-        temp['firstAskedAt'] = pd.to_datetime(temp['firstAskedAt'], errors='coerce')
-        start_date = pd.to_datetime(start)
-        end_date = pd.to_datetime(end)
-        
-        # 유효한 날짜만 필터링
-        temp = temp[(temp['firstAskedAt'].notna()) & 
-                   (temp['firstAskedAt'] >= start_date) & 
-                   (temp['firstAskedAt'] <= end_date)]
+        # ISO 문자열을 datetime으로 변환 (더 안전한 방식)
+        try:
+            temp['firstAskedAt'] = pd.to_datetime(temp['firstAskedAt'], errors='coerce', format='mixed')
+            start_date = pd.to_datetime(start)
+            end_date = pd.to_datetime(end)
+            
+            # 유효한 날짜만 필터링
+            temp = temp[(temp['firstAskedAt'].notna()) & 
+                       (temp['firstAskedAt'] >= start_date) & 
+                       (temp['firstAskedAt'] <= end_date)]
+        except Exception as e:
+            print(f"[FILTER] 날짜 파싱 오류: {e}")
+            # 날짜 파싱 실패 시 전체 데이터 반환
+            pass
     
     # 2. 카테고리별 필터링 (제공해주신 전처리 코드의 keep_keys 방식)
     if 고객유형 != "전체": 
