@@ -91,15 +91,20 @@ class ChannelTalkAPI:
                     response.raise_for_status()
                     data = response.json()
                 
-                print(f"[API] 응답 키들: {list(data.keys())}")
-                print(f"[API] 응답 원본 (첫 번째 페이지만):")
-                print(json.dumps(data, indent=2, ensure_ascii=False))
-                print(f"[API] userChats 개수: {len(data.get('userChats', []))}")
+                # userChats만 로그 출력 (실제 사용하는 데이터만)
+                user_chats = data.get('userChats', [])
+                print(f"[API] userChats 개수: {len(user_chats)}")
                 print(f"[API] next 값: {data.get('next')}")
                 
-                # next 키를 먼저 확인 (응답 최상위 레벨)
-                print(f"[API] 응답 최상위 레벨 키들: {list(data.keys())}")
-                print(f"[API] next 키 존재 여부: {'next' in data}")
+                # 첫 번째 페이지만 상세 정보 출력
+                if page_count == 1 and user_chats:
+                    print(f"[API] 첫 번째 userChat 샘플:")
+                    sample_chat = user_chats[0]
+                    print(f"  - ID: {sample_chat.get('id', 'N/A')}")
+                    print(f"  - firstAskedAt: {sample_chat.get('firstAskedAt', 'N/A')}")
+                    print(f"  - createdAt: {sample_chat.get('createdAt', 'N/A')}")
+                
+                # next 키 확인 (간소화)
                 if 'next' in data:
                     print(f"[API] next 값: {data['next']}")
                 
@@ -127,8 +132,7 @@ class ChannelTalkAPI:
                     all_userchats.extend(new_chats)
                     print(f"[API] userChats 수집 완료: {len(new_chats)} 건 (중복 제외)")
                     
-                    # 다음 페이지 여부 체크 (공백까지 안전하게)
-                    print(f"[API] 응답에 next 키 존재: {'next' in data}")
+                    # 다음 페이지 여부 체크
                     if data.get("next") and str(data["next"]).strip():
                         new_since = data["next"]
                         print(f"[API] next 값: {data['next']}")
@@ -311,12 +315,17 @@ class ServerCache:
     def save_data(self, cache_key: str, data: pd.DataFrame, metadata: Dict):
         """데이터와 메타데이터 저장"""
         try:
+            # 캐시 디렉토리 확인 및 생성
+            self.ensure_cache_dir()
+            
             # 데이터 저장
             data_path = self.get_cache_path(cache_key)
+            print(f"[CACHE] 데이터 저장 경로: {data_path}")
             data.to_pickle(data_path)
             
             # 메타데이터 저장
             metadata_path = self.get_metadata_path(cache_key)
+            print(f"[CACHE] 메타데이터 저장 경로: {metadata_path}")
             with open(metadata_path, 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, ensure_ascii=False, indent=2)
             
@@ -324,6 +333,8 @@ class ServerCache:
             return True
         except Exception as e:
             print(f"[CACHE] 데이터 저장 실패: {e}")
+            print(f"[CACHE] 현재 작업 디렉토리: {os.getcwd()}")
+            print(f"[CACHE] 캐시 디렉토리: {self.cache_dir}")
             return False
     
     def load_data(self, cache_key: str) -> tuple[Optional[pd.DataFrame], Optional[Dict]]:
@@ -573,8 +584,16 @@ async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
             "data_count": len(df),
             "source": "full_update"
         }
-        server_cache.save_data(cache_key, df, metadata)
-        print(f"[CACHE] 전체 데이터 저장 완료: {len(df)} 건")
+        print(f"[CACHE] 캐시 저장 시도: {cache_key}")
+        print(f"[CACHE] 데이터 크기: {len(df)} 건")
+        print(f"[CACHE] 메타데이터: {metadata}")
+        
+        try:
+            server_cache.save_data(cache_key, df, metadata)
+            print(f"[CACHE] 전체 데이터 저장 완료: {len(df)} 건")
+        except Exception as e:
+            print(f"[CACHE] 캐시 저장 실패: {e}")
+        
         return df
     except Exception as e:
         print(f"[CACHE] 데이터 로드 실패: {e}")
