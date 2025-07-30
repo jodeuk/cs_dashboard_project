@@ -448,6 +448,9 @@ async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
     """캐시된 데이터를 가져오거나 API에서 새로 가져옵니다. (스마트 증분 업데이트)"""
     print(f"[CACHE] 데이터 요청: {start_date} ~ {end_date}")
     
+    # 캐시 디렉토리 생성 확인
+    server_cache.ensure_cache_dir()
+    
     # 1. 기존 캐시 확인 (가장 큰 범위의 캐시 찾기)
     cached_data = None
     cached_metadata = None
@@ -455,34 +458,50 @@ async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
     
     # 캐시 디렉토리에서 사용 가능한 캐시 찾기
     if os.path.exists(server_cache.cache_dir):
-        for filename in os.listdir(server_cache.cache_dir):
-            if filename.endswith('_metadata.json'):
-                try:
-                    # 캐시 키 추출 (userchats_2025-01-01_2025-01-31_metadata.json)
-                    cache_key_from_file = filename.replace('_metadata.json', '')
-                    if cache_key_from_file.startswith('userchats_'):
-                        # 날짜 범위 추출
-                        date_range = cache_key_from_file.replace('userchats_', '')
-                        if '_' in date_range:
-                            cached_start, cached_end = date_range.split('_', 1)
-                            
-                            # 요청 범위가 캐시 범위에 포함되는지 확인
-                            if cached_start <= start_date and cached_end >= end_date:
-                                print(f"[CACHE] 적합한 캐시 발견: {cached_start} ~ {cached_end}")
-                                cached_data, cached_metadata = server_cache.load_data(cache_key_from_file)
+        print(f"[CACHE] 캐시 디렉토리 확인: {server_cache.cache_dir}")
+        cache_files = [f for f in os.listdir(server_cache.cache_dir) if f.endswith('_metadata.json')]
+        print(f"[CACHE] 발견된 캐시 파일 수: {len(cache_files)}")
+        
+        for filename in cache_files:
+            try:
+                # 캐시 키 추출 (userchats_2025-01-01_2025-01-31_metadata.json)
+                cache_key_from_file = filename.replace('_metadata.json', '')
+                if cache_key_from_file.startswith('userchats_'):
+                    # 날짜 범위 추출
+                    date_range = cache_key_from_file.replace('userchats_', '')
+                    if '_' in date_range:
+                        cached_start, cached_end = date_range.split('_', 1)
+                        print(f"[CACHE] 캐시 파일 검사: {cached_start} ~ {cached_end}")
+                        
+                        # 요청 범위가 캐시 범위에 포함되는지 확인
+                        if cached_start <= start_date and cached_end >= end_date:
+                            print(f"[CACHE] 적합한 캐시 발견: {cached_start} ~ {cached_end}")
+                            cached_data, cached_metadata = server_cache.load_data(cache_key_from_file)
+                            if cached_data is not None:
                                 cache_key = cache_key_from_file
+                                print(f"[CACHE] 캐시 로드 성공: {cache_key}")
                                 break
-                except Exception as e:
-                    print(f"[CACHE] 캐시 파일 파싱 오류: {e}")
-                    continue
+                            else:
+                                print(f"[CACHE] 캐시 로드 실패: {cache_key_from_file}")
+            except Exception as e:
+                print(f"[CACHE] 캐시 파일 파싱 오류: {e}")
+                continue
+    else:
+        print(f"[CACHE] 캐시 디렉토리가 존재하지 않음: {server_cache.cache_dir}")
     
     # 2. 캐시가 유효한 경우 필터링하여 반환
-    if cached_data is not None and server_cache.is_cache_valid(cached_metadata, start_date, end_date):
-        print(f"[CACHE] 유효한 캐시 사용: {len(cached_data)} 건")
-        filtered_data = server_cache.filter_data_by_date_range(cached_data, start_date, end_date)
-        if len(filtered_data) > 0:
-            print(f"[CACHE] 필터링된 데이터 반환: {len(filtered_data)} 건")
-            return filtered_data
+    if cached_data is not None:
+        print(f"[CACHE] 캐시 데이터 발견: {len(cached_data)} 건")
+        if server_cache.is_cache_valid(cached_metadata, start_date, end_date):
+            print(f"[CACHE] 캐시 유효함 (24시간 이내)")
+            filtered_data = server_cache.filter_data_by_date_range(cached_data, start_date, end_date)
+            if len(filtered_data) > 0:
+                print(f"[CACHE] 필터링된 데이터 반환: {len(filtered_data)} 건")
+                return filtered_data
+            else:
+                print(f"[CACHE] 필터링 후 데이터 없음")
+        else:
+            print(f"[CACHE] 캐시 만료됨")
     
     # 3. 증분 업데이트 시도 (기존 캐시 + 당일 데이터만)
     if cached_data is not None:
