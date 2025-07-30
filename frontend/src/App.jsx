@@ -248,33 +248,14 @@ function App() {
             padding: "16px",
             borderRadius: "8px",
             marginBottom: "20px",
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-            gap: "16px"
+            display: "flex",
+            justifyContent: "center"
           }}>
             <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: "24px", fontWeight: "bold", color: "#007bff" }}>
+              <div style={{ fontSize: "32px", fontWeight: "bold", color: "#007bff" }}>
                 {statistics.총문의수?.toLocaleString() || 0}
               </div>
-              <div style={{ fontSize: "14px", color: "#666" }}>총 문의수</div>
-            </div>
-            <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: "24px", fontWeight: "bold", color: "#28a745" }}>
-                {statistics.고객유형수 || 0}
-              </div>
-              <div style={{ fontSize: "14px", color: "#666" }}>고객유형</div>
-            </div>
-            <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: "24px", fontWeight: "bold", color: "#ffc107" }}>
-                {statistics.문의유형수 || 0}
-              </div>
-              <div style={{ fontSize: "14px", color: "#666" }}>문의유형</div>
-            </div>
-            <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: "24px", fontWeight: "bold", color: "#dc3545" }}>
-                {statistics.서비스유형수 || 0}
-              </div>
-              <div style={{ fontSize: "14px", color: "#666" }}>서비스유형</div>
+              <div style={{ fontSize: "16px", color: "#666" }}>총 문의수</div>
             </div>
           </div>
         )}

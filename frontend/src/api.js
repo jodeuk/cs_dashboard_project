@@ -5,12 +5,30 @@ async function apiCall(endpoint, params = {}) {
   const qs = new URLSearchParams(params).toString();
   const url = `${API_BASE}${endpoint}${qs ? `?${qs}` : ''}`;
 
-  const response = await fetch(url);
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail || `API 호출 실패: ${response.status}`);
+  console.log(`🌐 API 호출: ${url}`);
+
+  try {
+    const response = await fetch(url);
+    console.log(`📡 응답 상태: ${response.status} ${response.statusText}`);
+    
+    if (!response.ok) {
+      let errorDetail = `API 호출 실패: ${response.status}`;
+      try {
+        const error = await response.json();
+        errorDetail = error.detail || errorDetail;
+      } catch (e) {
+        console.warn('에러 응답 파싱 실패:', e);
+      }
+      throw new Error(errorDetail);
+    }
+    
+    const data = await response.json();
+    console.log(`✅ API 응답 성공: ${endpoint}`, data);
+    return data;
+  } catch (error) {
+    console.error(`❌ API 호출 실패: ${endpoint}`, error);
+    throw error;
   }
-  return response.json();
 }
 
 // 필터 옵션 조회 (기간 파라미터 필요)
@@ -76,9 +94,12 @@ export async function refreshCache(start, end) {
 // API 상태 확인
 export async function checkApiHealth() {
   try {
-    const response = await fetch(API_BASE.replace('/api', ''));
+    console.log('🔍 API 상태 확인 중...');
+    const response = await fetch(API_BASE.replace('/api', '/health'));
+    console.log(`🏥 API 상태: ${response.status} ${response.statusText}`);
     return response.ok;
   } catch (error) {
+    console.error('❌ API 연결 실패:', error);
     return false;
   }
 } 
