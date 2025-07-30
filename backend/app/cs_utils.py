@@ -10,14 +10,15 @@ from dotenv import load_dotenv
 
 # Render 환경 감지 및 캐시 디렉토리 설정
 def get_cache_directory():
-    """Render 환경에서는 /tmp 사용, 로컬에서는 프로젝트 루트의 cache 사용"""
+    """Render 환경에서는 Persistent Disk 사용, 로컬에서는 프로젝트 루트의 cache 사용"""
     # Render 환경 감지 (RENDER 환경변수 또는 /opt/render 경로 존재)
     is_render = os.getenv('RENDER') or os.path.exists('/opt/render')
     
     if is_render:
-        # Render 환경: /tmp 사용 (임시 파일이지만 서버 재시작까지는 유지)
-        cache_dir = '/tmp/cache'
-        print(f"[DEBUG] Render 환경 감지됨 - 캐시 디렉토리: {cache_dir}")
+        # Render 환경: Persistent Disk 사용 (/data/cache)
+        # 환경변수로 설정 가능, 기본값은 /data/cache
+        cache_dir = os.getenv('CACHE_DIR', '/data/cache')
+        print(f"[DEBUG] Render 환경 감지됨 - Persistent Disk 캐시 디렉토리: {cache_dir}")
     else:
         # 로컬 환경: 프로젝트 루트의 cache 사용
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
