@@ -300,59 +300,193 @@ class ServerCache:
             data_path = self.get_cache_path(cache_key)
             metadata_path = self.get_metadata_path(cache_key)
             
-            if not os.path.exists(data_path) or not os.path.exists(metadata_path):
+            if os.path.exists(data_path) and os.path.exists(metadata_path):
+                # 데이터 로드
+                data = pd.read_pickle(data_path)
+                
+                # 메타데이터 로드
+                with open(metadata_path, 'r', encoding='utf-8') as f:
+                    metadata = json.load(f)
+                
+                print(f"[CACHE] 캐시 로드 성공: {cache_key}")
+                return data, metadata
+            else:
+                print(f"[CACHE] 캐시 파일 없음: {cache_key}")
                 return None, None
-            
-            # 데이터 로드
-            data = pd.read_pickle(data_path)
-            
-            # 메타데이터 로드
-            with open(metadata_path, 'r', encoding='utf-8') as f:
-                metadata = json.load(f)
-            
-            print(f"[CACHE] 데이터 로드 완료: {cache_key}")
-            return data, metadata
         except Exception as e:
-            print(f"[CACHE] 데이터 로드 실패: {e}")
+            print(f"[CACHE] 캐시 로드 실패: {e}")
             return None, None
     
     def is_cache_valid(self, metadata: Dict, start_date: str, end_date: str) -> bool:
-        """캐시가 유효한지 확인"""
+        """캐시 유효성 검사 (24시간 이내) - 날짜 범위 변경은 허용"""
         if not metadata:
             return False
         
-        cache_start = metadata.get("start_date")
-        cache_end = metadata.get("end_date")
-        cache_updated = metadata.get("updated_at")
-        
-        # 날짜 범위 확인
-        if cache_start != start_date or cache_end != end_date:
-            return False
-        
-        # 캐시 만료 확인 (24시간)
-        if cache_updated:
-            updated_time = datetime.fromisoformat(cache_updated)
-            if datetime.now() - updated_time > timedelta(hours=24):
+        try:
+            # 업데이트 시간 확인 (24시간 이내)
+            updated_at = datetime.fromisoformat(metadata.get("updated_at", ""))
+            if datetime.now() - updated_at > timedelta(hours=24):
+                print(f"[CACHE] 캐시 만료됨 (24시간 초과)")
                 return False
+            
+            # 날짜 범위는 변경되어도 OK (기존 데이터 활용 가능)
+            print(f"[CACHE] 캐시 유효함 (24시간 이내)")
+            return True
+        except Exception as e:
+            print(f"[CACHE] 캐시 유효성 검사 실패: {e}")
+            return False
+    
+    def get_required_date_range(self, cached_data: pd.DataFrame, start_date: str, end_date: str) -> tuple[str, str]:
+        """캐시된 데이터를 고려하여 추가로 조회해야 할 날짜 범위를 계산"""
+        if cached_data is None or cached_data.empty or 'firstAskedAt' not in cached_data.columns:
+            return start_date, end_date
         
-        return True
+        try:
+            # 캐시된 데이터의 날짜 범위 확인
+            cached_data_copy = cached_data.copy()
+            cached_data_copy['firstAskedAt'] = pd.to_datetime(cached_data_copy['firstAskedAt'], errors='coerce', format='mixed')
+            
+            cached_start = cached_data_copy['firstAskedAt'].min()
+            cached_end = cached_data_copy['firstAskedAt'].max()
+            
+            request_start = pd.to_datetime(start_date)
+            request_end = pd.to_datetime(end_date)
+            
+            # 추가로 조회해야 할 범위 계산
+            new_start = start_date
+            new_end = end_date
+            
+            # 시작 날짜가 캐시 범위보다 이전이면 추가 조회 필요
+            if pd.notna(cached_start) and request_start < cached_start:
+                new_start = start_date
+            else:
+                new_start = cached_end.strftime('%Y-%m-%d') if pd.notna(cached_end) else start_date
+            
+            # 종료 날짜가 캐시 범위보다 이후면 추가 조회 필요
+            if pd.notna(cached_end) and request_end > cached_end:
+                new_end = end_date
+            else:
+                new_end = cached_start.strftime('%Y-%m-%d') if pd.notna(cached_start) else end_date
+            
+            print(f"[CACHE] 캐시 범위: {cached_start} ~ {cached_end}")
+            print(f"[CACHE] 요청 범위: {request_start} ~ {request_end}")
+            print(f"[CACHE] 추가 조회 범위: {new_start} ~ {new_end}")
+            
+            return new_start, new_end
+            
+        except Exception as e:
+            print(f"[CACHE] 날짜 범위 계산 실패: {e}")
+            return start_date, end_date
+    
+    def merge_incremental_data(self, existing_data: pd.DataFrame, new_data: pd.DataFrame) -> pd.DataFrame:
+        """기존 데이터와 새로운 데이터를 병합 (중복 제거)"""
+        if existing_data is None or existing_data.empty:
+            return new_data
+        
+        if new_data is None or new_data.empty:
+            return existing_data
+        
+        # userId와 firstAskedAt을 기준으로 중복 제거
+        combined = pd.concat([existing_data, new_data], ignore_index=True)
+        
+        # 중복 제거 (userId와 firstAskedAt이 같은 경우)
+        if 'userId' in combined.columns and 'firstAskedAt' in combined.columns:
+            combined = combined.drop_duplicates(subset=['userId', 'firstAskedAt'], keep='last')
+        
+        print(f"[CACHE] 증분 업데이트: 기존 {len(existing_data)}건 + 새로 {len(new_data)}건 = 총 {len(combined)}건")
+        return combined
+    
+    def get_latest_cached_date(self, cache_key: str) -> Optional[str]:
+        """캐시된 데이터의 가장 최근 날짜 반환"""
+        try:
+            data, metadata = self.load_data(cache_key)
+            if data is not None and not data.empty and 'firstAskedAt' in data.columns:
+                # ISO 형식 날짜를 datetime으로 변환
+                data['firstAskedAt'] = pd.to_datetime(data['firstAskedAt'], errors='coerce', format='mixed')
+                latest_date = data['firstAskedAt'].max()
+                if pd.notna(latest_date):
+                    return latest_date.strftime('%Y-%m-%d')
+        except Exception as e:
+            print(f"[CACHE] 최근 날짜 조회 실패: {e}")
+        return None
+
+    def filter_data_by_date_range(self, df: pd.DataFrame, start_date: str, end_date: str) -> pd.DataFrame:
+        """캐시된 데이터에서 특정 날짜 범위의 데이터만 필터링합니다."""
+        if df is None or df.empty:
+            return pd.DataFrame()
+        
+        try:
+            # firstAskedAt을 datetime으로 변환
+            df['firstAskedAt'] = pd.to_datetime(df['firstAskedAt'], errors='coerce', format='mixed')
+            
+            # 날짜 범위 필터링
+            start_datetime = pd.to_datetime(start_date)
+            end_datetime = pd.to_datetime(end_date)
+            
+            filtered_df = df[(df['firstAskedAt'].notna()) & 
+                            (df['firstAskedAt'] >= start_datetime) & 
+                            (df['firstAskedAt'] <= end_datetime)]
+            
+            print(f"[CACHE] 날짜 범위 필터링 결과: {len(filtered_df)} 건")
+            return filtered_df
+        except Exception as e:
+            print(f"[CACHE] 날짜 범위 필터링 실패: {e}")
+            return pd.DataFrame()
 
 # 전역 캐시 인스턴스
 server_cache = ServerCache()
 
 async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
-    """캐시된 데이터를 가져오거나 API에서 새로 가져옵니다."""
+    """캐시된 데이터를 가져오거나 API에서 새로 가져옵니다. (기존 캐시 최대 활용)"""
     cache_key = f"userchats_{start_date}_{end_date}"
     
     # 캐시에서 데이터 로드 시도
     cached_data, metadata = server_cache.load_data(cache_key)
     
-    # 캐시가 유효한지 확인
+    # 캐시가 유효한지 확인 (24시간 이내)
     if cached_data is not None and server_cache.is_cache_valid(metadata, start_date, end_date):
         print(f"[CACHE] 캐시된 데이터 사용: {len(cached_data)} 건")
-        return cached_data
+        
+        # 요청된 날짜 범위에 맞는 데이터만 필터링
+        filtered_data = server_cache.filter_data_by_date_range(cached_data, start_date, end_date)
+        if len(filtered_data) > 0:
+            print(f"[CACHE] 필터링된 데이터 반환: {len(filtered_data)} 건")
+            return filtered_data
+        else:
+            print(f"[CACHE] 캐시된 데이터에 요청 범위 데이터 없음")
     
     try:
+        # 기존 캐시 데이터가 있으면 필요한 부분만 추가 조회
+        if cached_data is not None and len(cached_data) > 0:
+            required_start, required_end = server_cache.get_required_date_range(cached_data, start_date, end_date)
+            
+            # 추가 조회가 필요한 경우
+            if required_start != required_end:
+                print(f"[API] 추가 데이터 조회: {required_start} ~ {required_end}")
+                additional_data = await channel_api.get_userchats(required_start, required_end)
+                if additional_data:
+                    additional_df = await channel_api.process_userchat_data(additional_data)
+                    # 기존 데이터와 병합
+                    merged_df = server_cache.merge_incremental_data(cached_data, additional_df)
+                    
+                    # 요청된 날짜 범위에 맞는 데이터만 필터링
+                    final_df = server_cache.filter_data_by_date_range(merged_df, start_date, end_date)
+                    
+                    # 메타데이터 업데이트
+                    metadata = {
+                        "start_date": start_date,
+                        "end_date": end_date,
+                        "updated_at": datetime.now().isoformat(),
+                        "data_count": len(merged_df),
+                        "source": "incremental_update"
+                    }
+                    
+                    # 캐시에 저장
+                    server_cache.save_data(cache_key, merged_df, metadata)
+                    print(f"[CACHE] 증분 업데이트 성공: {len(final_df)} 건")
+                    return final_df
+        
+        # 전체 데이터 조회 (캐시가 없거나 추가 조회 실패)
         print(f"[API] 새로운 데이터 조회: {start_date} ~ {end_date}")
         raw_data = await channel_api.get_userchats(start_date, end_date)
         df = await channel_api.process_userchat_data(raw_data)
@@ -376,7 +510,8 @@ async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
         # 캐시된 데이터가 있으면 사용
         if cached_data is not None:
             print(f"[CACHE] API 실패, 캐시된 데이터 사용: {len(cached_data)} 건")
-            return cached_data
+            filtered_data = server_cache.filter_data_by_date_range(cached_data, start_date, end_date)
+            return filtered_data
         
         # 실제 데이터 구조에 맞춘 샘플 데이터
         sample_data = [
