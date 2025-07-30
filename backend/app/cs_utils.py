@@ -437,138 +437,110 @@ class ServerCache:
 server_cache = ServerCache()
 
 async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
-    """캐시된 데이터를 가져오거나 API에서 새로 가져옵니다. (기존 캐시 최대 활용)"""
-    cache_key = f"userchats_{start_date}_{end_date}"
+    """캐시된 데이터를 가져오거나 API에서 새로 가져옵니다. (스마트 증분 업데이트)"""
+    print(f"[CACHE] 데이터 요청: {start_date} ~ {end_date}")
     
-    # 캐시에서 데이터 로드 시도
-    cached_data, metadata = server_cache.load_data(cache_key)
+    # 1. 기존 캐시 확인 (가장 큰 범위의 캐시 찾기)
+    cached_data = None
+    cached_metadata = None
+    cache_key = None
     
-    # 캐시가 유효한지 확인 (24시간 이내)
-    if cached_data is not None and server_cache.is_cache_valid(metadata, start_date, end_date):
-        print(f"[CACHE] 캐시된 데이터 사용: {len(cached_data)} 건")
-        
-        # 요청된 날짜 범위에 맞는 데이터만 필터링
+    # 캐시 디렉토리에서 사용 가능한 캐시 찾기
+    if os.path.exists(server_cache.cache_dir):
+        for filename in os.listdir(server_cache.cache_dir):
+            if filename.endswith('_metadata.json'):
+                try:
+                    # 캐시 키 추출 (userchats_2025-01-01_2025-01-31_metadata.json)
+                    cache_key_from_file = filename.replace('_metadata.json', '')
+                    if cache_key_from_file.startswith('userchats_'):
+                        # 날짜 범위 추출
+                        date_range = cache_key_from_file.replace('userchats_', '')
+                        if '_' in date_range:
+                            cached_start, cached_end = date_range.split('_', 1)
+                            
+                            # 요청 범위가 캐시 범위에 포함되는지 확인
+                            if cached_start <= start_date and cached_end >= end_date:
+                                print(f"[CACHE] 적합한 캐시 발견: {cached_start} ~ {cached_end}")
+                                cached_data, cached_metadata = server_cache.load_data(cache_key_from_file)
+                                cache_key = cache_key_from_file
+                                break
+                except Exception as e:
+                    print(f"[CACHE] 캐시 파일 파싱 오류: {e}")
+                    continue
+    
+    # 2. 캐시가 유효한 경우 필터링하여 반환
+    if cached_data is not None and server_cache.is_cache_valid(cached_metadata, start_date, end_date):
+        print(f"[CACHE] 유효한 캐시 사용: {len(cached_data)} 건")
         filtered_data = server_cache.filter_data_by_date_range(cached_data, start_date, end_date)
         if len(filtered_data) > 0:
             print(f"[CACHE] 필터링된 데이터 반환: {len(filtered_data)} 건")
             return filtered_data
-        else:
-            print(f"[CACHE] 캐시된 데이터에 요청 범위 데이터 없음")
     
+    # 3. 증분 업데이트 시도 (기존 캐시 + 당일 데이터만)
+    if cached_data is not None:
+        print(f"[CACHE] 증분 업데이트 시도")
+        try:
+            # 기존 캐시의 마지막 날짜 확인
+            cached_end = cached_metadata.get('end_date', '')
+            if cached_end and cached_end < end_date:
+                # 당일 데이터만 추가 조회
+                today = datetime.now().strftime('%Y-%m-%d')
+                if cached_end < today:
+                    print(f"[CACHE] 당일 데이터 추가 조회: {cached_end} ~ {today}")
+                    new_data = await channel_api.get_userchats(cached_end, today)
+                    if new_data:
+                        new_df = await channel_api.process_userchat_data(new_data)
+                        # 기존 데이터와 병합
+                        combined_df = pd.concat([cached_data, new_df], ignore_index=True)
+                        # 새로운 캐시 저장
+                        new_cache_key = f"userchats_{start_date}_{end_date}"
+                        new_metadata = {
+                            "start_date": start_date, 
+                            "end_date": end_date, 
+                            "updated_at": datetime.now().isoformat(),
+                            "data_count": len(combined_df),
+                            "source": "incremental_update"
+                        }
+                        server_cache.save_data(new_cache_key, combined_df, new_metadata)
+                        print(f"[CACHE] 증분 업데이트 완료: {len(combined_df)} 건")
+                        return server_cache.filter_data_by_date_range(combined_df, start_date, end_date)
+        except Exception as e:
+            print(f"[CACHE] 증분 업데이트 실패: {e}")
+    
+    # 4. 전체 데이터 조회 (마지막 수단)
+    print(f"[CACHE] 전체 데이터 조회 시작")
     try:
-        # 기존 캐시 데이터가 있으면 필요한 부분만 추가 조회
-        if cached_data is not None and len(cached_data) > 0:
-            required_start, required_end = server_cache.get_required_date_range(cached_data, start_date, end_date)
-            
-            # 추가 조회가 필요한 경우
-            if required_start != required_end:
-                print(f"[API] 추가 데이터 조회: {required_start} ~ {required_end}")
-                additional_data = await channel_api.get_userchats(required_start, required_end)
-                if additional_data:
-                    additional_df = await channel_api.process_userchat_data(additional_data)
-                    # 기존 데이터와 병합
-                    merged_df = server_cache.merge_incremental_data(cached_data, additional_df)
-                    
-                    # 요청된 날짜 범위에 맞는 데이터만 필터링
-                    final_df = server_cache.filter_data_by_date_range(merged_df, start_date, end_date)
-                    
-                    # 메타데이터 업데이트
-                    metadata = {
-                        "start_date": start_date,
-                        "end_date": end_date,
-                        "updated_at": datetime.now().isoformat(),
-                        "data_count": len(merged_df),
-                        "source": "incremental_update"
-                    }
-                    
-                    # 캐시에 저장
-                    server_cache.save_data(cache_key, merged_df, metadata)
-                    print(f"[CACHE] 증분 업데이트 성공: {len(final_df)} 건")
-                    return final_df
-        
-        # 전체 데이터 조회 (캐시가 없거나 추가 조회 실패)
-        print(f"[API] 새로운 데이터 조회: {start_date} ~ {end_date}")
         raw_data = await channel_api.get_userchats(start_date, end_date)
         df = await channel_api.process_userchat_data(raw_data)
         
-        # 메타데이터 생성
+        # 캐시 저장
+        cache_key = f"userchats_{start_date}_{end_date}"
         metadata = {
-            "start_date": start_date,
-            "end_date": end_date,
+            "start_date": start_date, 
+            "end_date": end_date, 
             "updated_at": datetime.now().isoformat(),
             "data_count": len(df),
-            "source": "api"
+            "source": "full_update"
         }
-        
-        # 캐시에 저장
         server_cache.save_data(cache_key, df, metadata)
-        
-        print(f"데이터 로드 성공: {len(df)} 건")
+        print(f"[CACHE] 전체 데이터 저장 완료: {len(df)} 건")
         return df
     except Exception as e:
-        print(f"데이터 로드 실패: {e}")
-        # 캐시된 데이터가 있으면 사용
+        print(f"[CACHE] 데이터 로드 실패: {e}")
         if cached_data is not None:
-            print(f"[CACHE] API 실패, 캐시된 데이터 사용: {len(cached_data)} 건")
-            filtered_data = server_cache.filter_data_by_date_range(cached_data, start_date, end_date)
-            return filtered_data
+            print(f"[CACHE] 캐시된 데이터로 폴백")
+            return server_cache.filter_data_by_date_range(cached_data, start_date, end_date)
         
-        # 실제 데이터 구조에 맞춘 샘플 데이터
-        sample_data = [
-            {
-                "userId": "sample_user_1",
-                "mediumType": "native",
-                "workflow": "support",
-                "tags": ["고객유형/일반고객", "문의유형/기술지원", "서비스유형/웹서비스"],
-                "firstAskedAt": "2025-06-15T10:00:00",
-                "operationWaitingTime": "00:05:00",
-                "operationAvgReplyTime": "00:10:00",
-                "operationTotalReplyTime": "00:30:00",
-                "operationResolutionTime": "01:00:00",
-                "cs_satisfaction": None,
-                "chats": ["안녕하세요", "로그인이 안됩니다", "도와주세요"]
-            },
-            {
-                "userId": "sample_user_2",
-                "mediumType": "native",
-                "workflow": "billing",
-                "tags": ["고객유형/기업고객", "문의유형/결제문의", "서비스유형/결제서비스"],
-                "firstAskedAt": "2025-06-20T14:30:00",
-                "operationWaitingTime": "00:03:00",
-                "operationAvgReplyTime": "00:07:30",
-                "operationTotalReplyTime": "00:20:00",
-                "operationResolutionTime": "00:40:00",
-                "cs_satisfaction": None,
-                "chats": ["환불 요청합니다", "결제 취소 부탁드립니다"]
-            },
-            {
-                "userId": "sample_user_3",
-                "mediumType": "native",
-                "workflow": "account",
-                "tags": ["고객유형/일반고객", "문의유형/계정문의", "서비스유형/계정서비스"],
-                "firstAskedAt": "2025-06-25T09:15:00",
-                "operationWaitingTime": "00:02:00",
-                "operationAvgReplyTime": "00:05:00",
-                "operationTotalReplyTime": "00:15:00",
-                "operationResolutionTime": "00:30:00",
-                "cs_satisfaction": None,
-                "chats": ["비밀번호를 변경하고 싶습니다", "이메일 인증이 안됩니다"]
-            },
-            {
-                "userId": "sample_user_4",
-                "mediumType": "native",
-                "workflow": "technical",
-                "tags": ["고객유형/기업고객", "문의유형/기술지원", "서비스유형/API서비스"],
-                "firstAskedAt": "2025-06-28T16:45:00",
-                "operationWaitingTime": "00:10:00",
-                "operationAvgReplyTime": "00:15:00",
-                "operationTotalReplyTime": "00:45:00",
-                "operationResolutionTime": "01:30:00",
-                "cs_satisfaction": None,
-                "chats": ["API 연동에 문제가 있습니다", "인증 토큰이 만료되었습니다"]
-            }
-        ]
-        return pd.DataFrame(sample_data)
+        # 샘플 데이터 반환
+        print(f"[CACHE] 샘플 데이터 반환")
+        return pd.DataFrame({
+            "firstAskedAt": ["2025-07-01T10:00:00", "2025-07-02T11:00:00"],
+            "고객유형": ["SKmySUNI", "삼성전자"],
+            "문의유형": ["과목_수업", "오류"],
+            "서비스유형": ["엘리스LXP", "교원연수"],
+            "문의유형_2차": ["로그인", "결제"],
+            "서비스유형_2차": ["웹", "앱"]
+        })
 
 def get_filtered_df(df: pd.DataFrame, start: str, end: str, 
                    고객유형="전체", 문의유형="전체", 서비스유형="전체", 
