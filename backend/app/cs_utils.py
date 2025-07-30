@@ -8,9 +8,12 @@ from typing import List, Dict, Optional
 import asyncio
 from dotenv import load_dotenv
 
-# 절대경로로 캐시 디렉토리 설정
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))  # app/ 디렉토리
-CACHE_DIR = os.path.join(PROJECT_ROOT, '..', '..', 'cache')  # 프로젝트 루트/cache
+# 절대경로로 캐시 디렉토리 설정 (강제 지정)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+CACHE_DIR = os.path.join(PROJECT_ROOT, 'cache')
+
+print("[DEBUG] 패치 적용 - 강제 지정 캐시 디렉토리:", CACHE_DIR)
+print("[DEBUG] 강제 지정 캐시 디렉토리 내 파일:", os.listdir(CACHE_DIR) if os.path.exists(CACHE_DIR) else "디렉토리 없음")
 
 load_dotenv()
 
@@ -276,10 +279,9 @@ channel_api = ChannelTalkAPI()
 # 서버 캐시 시스템
 class ServerCache:
     def __init__(self, cache_dir=None):
-        # 절대경로로 캐시 디렉토리 설정
+        # 강제 지정된 절대경로 사용
         if cache_dir is None:
-            project_root = os.path.dirname(os.path.abspath(__file__))  # app/ 디렉토리
-            self.cache_dir = os.path.join(project_root, '..', '..', 'cache')  # 프로젝트 루트/cache
+            self.cache_dir = CACHE_DIR  # 전역 변수 사용
         else:
             self.cache_dir = cache_dir
         print(f"[CACHE] ServerCache 초기화 - 캐시 디렉토리: {os.path.abspath(self.cache_dir)}")
