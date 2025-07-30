@@ -317,8 +317,14 @@ async def period_counts(
         temp = get_filtered_df(df, start, end, 고객유형, 문의유형, 서비스유형, 문의유형_2차, 서비스유형_2차)
         
         temp = temp.copy()
-        temp["month"] = pd.to_datetime(temp["firstAskedAt"]).dt.to_period('M').astype(str)
-        temp["week"] = pd.to_datetime(temp["firstAskedAt"]).dt.to_period('W').astype(str)
+        # 날짜 파싱을 안전하게 처리
+        try:
+            temp["month"] = pd.to_datetime(temp["firstAskedAt"], errors='coerce', format='mixed').dt.to_period('M').astype(str)
+            temp["week"] = pd.to_datetime(temp["firstAskedAt"], errors='coerce', format='mixed').dt.to_period('W').astype(str)
+        except Exception as e:
+            print(f"[PERIOD-COUNTS] 날짜 파싱 오류: {e}")
+            # 날짜 파싱 실패 시 빈 데이터 반환
+            return []
         
         if date_group == "월간":
             out = temp.groupby("month").size().reset_index(name="문의량")
@@ -394,12 +400,16 @@ async def customer_type_cs(
     try:
         df = await get_cached_data(start, end)
         
-        # 날짜 컬럼을 datetime으로 변환
-        df['firstAskedAt'] = pd.to_datetime(df['firstAskedAt'])
-        start_date = pd.to_datetime(start)
-        end_date = pd.to_datetime(end)
-        
-        temp = df[(df['firstAskedAt'] >= start_date) & (df['firstAskedAt'] <= end_date)]
+        # 날짜 컬럼을 datetime으로 변환 (더 안전한 파싱)
+        try:
+            df['firstAskedAt'] = pd.to_datetime(df['firstAskedAt'], errors='coerce', format='mixed')
+            start_date = pd.to_datetime(start)
+            end_date = pd.to_datetime(end)
+            
+            temp = df[(df['firstAskedAt'] >= start_date) & (df['firstAskedAt'] <= end_date)]
+        except Exception as e:
+            print(f"[CUSTOMER-TYPE-CS] 날짜 파싱 오류: {e}")
+            temp = df  # 날짜 필터링 실패 시 전체 데이터 사용
         
         # NaN 값을 안전하게 처리
         customer_counts = temp["고객유형"].dropna().value_counts().head(top_n)
