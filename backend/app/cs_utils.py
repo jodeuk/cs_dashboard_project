@@ -8,12 +8,33 @@ from typing import List, Dict, Optional
 import asyncio
 from dotenv import load_dotenv
 
-# 절대경로로 캐시 디렉토리 설정 (강제 지정)
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-CACHE_DIR = os.path.join(PROJECT_ROOT, 'cache')
+# Render 환경 감지 및 캐시 디렉토리 설정
+def get_cache_directory():
+    """Render 환경에서는 /tmp 사용, 로컬에서는 프로젝트 루트의 cache 사용"""
+    # Render 환경 감지 (RENDER 환경변수 또는 /opt/render 경로 존재)
+    is_render = os.getenv('RENDER') or os.path.exists('/opt/render')
+    
+    if is_render:
+        # Render 환경: /tmp 사용 (임시 파일이지만 서버 재시작까지는 유지)
+        cache_dir = '/tmp/cache'
+        print(f"[DEBUG] Render 환경 감지됨 - 캐시 디렉토리: {cache_dir}")
+    else:
+        # 로컬 환경: 프로젝트 루트의 cache 사용
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+        cache_dir = os.path.join(project_root, 'cache')
+        print(f"[DEBUG] 로컬 환경 - 캐시 디렉토리: {cache_dir}")
+    
+    # 캐시 디렉토리가 없으면 생성
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir, exist_ok=True)
+        print(f"[DEBUG] 캐시 디렉토리 생성: {cache_dir}")
+    
+    return cache_dir
 
-print("[DEBUG] 패치 적용 - 강제 지정 캐시 디렉토리:", CACHE_DIR)
-print("[DEBUG] 강제 지정 캐시 디렉토리 내 파일:", os.listdir(CACHE_DIR) if os.path.exists(CACHE_DIR) else "디렉토리 없음")
+# 전역 캐시 디렉토리 설정
+CACHE_DIR = get_cache_directory()
+print(f"[DEBUG] 최종 설정된 캐시 디렉토리: {CACHE_DIR}")
+print(f"[DEBUG] 캐시 디렉토리 내 파일: {os.listdir(CACHE_DIR) if os.path.exists(CACHE_DIR) else '디렉토리 없음'}")
 
 load_dotenv()
 
