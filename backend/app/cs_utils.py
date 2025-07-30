@@ -88,33 +88,38 @@ class ChannelTalkAPI:
 
                 print(f"[API] {page_count}번째 | since: {since} | userChats: {len(user_chats)} | next: {next_value}")
 
-                # 중복/빈 페이지 체크
+                # 1. userChats 없으면 무조건 break (끝)
                 if not user_chats:
                     print("[API] 더 이상 userChats 없음, 종료")
                     break
 
-                # 중복 방지: 수집되지 않은 것만
+                # 2. 중복방지: 새로운 것만 추가
                 new_chats = [chat for chat in user_chats if chat.get("id") not in collected_ids]
                 for chat in new_chats:
                     collected_ids.add(chat.get("id"))
                 all_userchats.extend(new_chats)
 
-                # 종료 조건: next 없음
+                # 3. next가 없거나 빈값이면 종료
                 if not next_value or not str(next_value).strip():
                     print("[API] next 없음, 종료")
                     break
 
-                # 무한루프 방지: 동일 next 반복
+                # 4. next가 동일하게 반복되면 종료
                 if next_value == last_next:
                     consecutive_same_next += 1
-                    print(f"[API] 동일 next 반복 {consecutive_same_next}회")
-                    if consecutive_same_next >= 2:  # (또는 3회 등)
+                    print(f"[API] 동일 next 반복 {consecutive_same_next}회 | next: {next_value}")
+                    if consecutive_same_next >= 2:
                         print("[API] 무한루프 방지, 종료")
                         break
                 else:
                     consecutive_same_next = 0
 
-                # 다음 루프 준비
+                # 5. 안전장치: 50페이지 이상 반복되고 데이터 거의 없으면 종료
+                if page_count > 50 and len(all_userchats) == 0:
+                    print("[API] 50페이지 이상이지만 데이터가 없음, 무한루프 방지로 종료")
+                    break
+
+                # 6. 다음 루프 준비
                 since = next_value
                 last_next = next_value
                         
