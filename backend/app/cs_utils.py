@@ -459,6 +459,10 @@ async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
     """캐시된 데이터를 가져오거나 API에서 새로 가져옵니다. (스마트 증분 업데이트)"""
     print(f"[CACHE] 데이터 요청: {start_date} ~ {end_date}")
     
+    def _normalize_date(d):
+        """항상 YYYY-MM-DD 포맷으로 통일"""
+        return pd.to_datetime(d).strftime("%Y-%m-%d")
+    
     # 캐시 디렉토리 생성 확인
     server_cache.ensure_cache_dir()
     
@@ -470,23 +474,40 @@ async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
     # 캐시 디렉토리에서 사용 가능한 캐시 찾기
     if os.path.exists(server_cache.cache_dir):
         print(f"[CACHE] 캐시 디렉토리 확인: {server_cache.cache_dir}")
-        cache_files = [f for f in os.listdir(server_cache.cache_dir) if f.endswith('_metadata.json')]
+        all_files = os.listdir(server_cache.cache_dir)
+        print(f"[CACHE] 캐시 디렉토리 전체 파일: {all_files}")
+        cache_files = [f for f in all_files if f.endswith('_metadata.json')]
         print(f"[CACHE] 발견된 캐시 파일 수: {len(cache_files)}")
+        print(f"[CACHE] 발견된 캐시 파일들: {cache_files}")
         
+        print(f"[DEBUG] 캐시 폴더 파일: {os.listdir(server_cache.cache_dir)}")
         for filename in cache_files:
+            print(f"[DEBUG] 캐시 파일명: {filename}")
+            cache_key_from_file = filename.replace('_metadata.json', '')
+            date_range = cache_key_from_file.replace('userchats_', '')
+            print(f"[DEBUG] 추출 date_range: {date_range}")
             try:
                 # 캐시 키 추출 (userchats_2025-01-01_2025-01-31_metadata.json)
                 cache_key_from_file = filename.replace('_metadata.json', '')
                 if cache_key_from_file.startswith('userchats_'):
                     # 날짜 범위 추출
                     date_range = cache_key_from_file.replace('userchats_', '')
+                    print(f"[DEBUG] 추출 date_range: {date_range}")
                     if '_' in date_range:
                         cached_start, cached_end = date_range.split('_', 1)
+                        print(f"[DEBUG] 파싱된 날짜: cached_start={cached_start}, cached_end={cached_end}")
+                        # 여기서 반드시 날짜 포맷 통일
+                        cached_start = _normalize_date(cached_start)
+                        cached_end = _normalize_date(cached_end)
+                        req_start = _normalize_date(start_date)
+                        req_end = _normalize_date(end_date)
+                        print(f"[DEBUG] 정규화된 날짜: cached_start={cached_start}, cached_end={cached_end}")
+                        print(f"[DEBUG] 정규화된 요청: req_start={req_start}, req_end={req_end}")
                         print(f"[CACHE] 캐시 파일 검사: {cached_start} ~ {cached_end}")
                         
                         # 요청 범위가 캐시 범위에 포함되는지 확인
-                        print(f"[CACHE] 범위 비교: 요청({start_date}~{end_date}) vs 캐시({cached_start}~{cached_end})")
-                        if cached_start <= start_date and cached_end >= end_date:
+                        print(f"[CACHE] 범위 비교: 요청({req_start}~{req_end}) vs 캐시({cached_start}~{cached_end})")
+                        if cached_start <= req_start and cached_end >= req_end:
                             print(f"[CACHE] 적합한 캐시 발견: {cached_start} ~ {cached_end}")
                             cached_data, cached_metadata = server_cache.load_data(cache_key_from_file)
                             if cached_data is not None:
