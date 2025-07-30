@@ -58,24 +58,26 @@ class ChannelTalkAPI:
             raise
 
     async def get_userchats(self, start_date: str, end_date: str, limit: int = 500) -> List[Dict]:
-        """Channel Talk API에서 UserChat 데이터를 가져옵니다."""
+        """지정된 기간의 UserChat 데이터를 가져옵니다."""
         if not self.access_key or not self.access_secret:
             raise ValueError("CHANNEL_ACCESS_KEY 또는 CHANNEL_ACCESS_SECRET 환경변수가 설정되지 않았습니다.")
         
-        # 올바른 API 엔드포인트 사용
-        url = f"{self.base_url}/open/v5/user-chats"
+        # 날짜를 타임스탬프로 변환
+        start_timestamp = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp() * 1000)
+        end_timestamp = int(datetime.strptime(end_date, "%Y-%m-%d").timestamp() * 1000)
         
         all_userchats = []
         since = None
+        page_count = 0
+        max_pages = 50  # 무한 루프 방지
         
         try:
-            while True:
-                params = {
-                    "limit": min(limit, 500),  # 최대 500개
-                    "sortOrder": "desc",
-                    "state": "closed"  # 완료된 채팅만
-                }
+            while page_count < max_pages:
+                page_count += 1
+                print(f"[API] {page_count}번째 페이지 조회 중...")
                 
+                url = f"{self.base_url}/open/v5/user-chats"
+                params = {"limit": limit}
                 if since:
                     params["since"] = since
                 
@@ -85,37 +87,43 @@ class ChannelTalkAPI:
                     response = await client.get(url, headers=self.headers, params=params)
                     response.raise_for_status()
                     data = response.json()
+                
+                print(f"[API] 응답 키들: {list(data.keys())}")
+                
+                if "userChats" in data:
+                    user_chats = data["userChats"]
+                    print(f"[API] 이번 페이지 채팅 수: {len(user_chats)}")
                     
-                    print(f"[API] 응답 키들: {list(data.keys()) if isinstance(data, dict) else 'list'}")
-                    
-                    if "userChats" in data:
-                        user_chats = data["userChats"]
-                        print(f"[API] 이번 페이지 채팅 수: {len(user_chats)}")
-                        
-                        # 날짜 필터링
-                        start_timestamp = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp() * 1000)
-                        end_timestamp = int(datetime.strptime(end_date, "%Y-%m-%d").timestamp() * 1000)
-                        
-                        filtered_chats = []
-                        for chat in user_chats:
-                            first_asked_at = chat.get("firstAskedAt")
-                            if first_asked_at and start_timestamp <= first_asked_at <= end_timestamp:
-                                filtered_chats.append(chat)
-                        
-                        all_userchats.extend(filtered_chats)
-                        print(f"[API] 필터링 후 이번 페이지 채팅 수: {len(filtered_chats)}")
-                        
-                        # 다음 페이지 확인
-                        if "next" in data and data["next"]:
-                            since = data["next"]
-                            print(f"[API] 다음 페이지 since: {since}")
-                        else:
-                            print("[API] 더 이상 페이지가 없습니다.")
-                            break
-                    else:
-                        print(f"[API] userChats 키가 없습니다. 응답: {data}")
+                    if len(user_chats) == 0:
+                        print("[API] 더 이상 데이터가 없습니다.")
                         break
-                        
+                    
+                    # 날짜 필터링
+                    filtered_chats = []
+                    for chat in user_chats:
+                        first_asked_at = chat.get("firstAskedAt")
+                        if first_asked_at and start_timestamp <= first_asked_at <= end_timestamp:
+                            filtered_chats.append(chat)
+                    
+                    all_userchats.extend(filtered_chats)
+                    print(f"[API] 필터링 후 이번 페이지 채팅 수: {len(filtered_chats)}")
+                    
+                    # 다음 페이지 확인
+                    if "next" in data and data["next"]:
+                        new_since = data["next"]
+                        # since 값이 변경되지 않으면 무한 루프 방지
+                        if new_since == since:
+                            print(f"[API] since 값이 변경되지 않음, 루프 종료: {since}")
+                            break
+                        since = new_since
+                        print(f"[API] 다음 페이지 since: {since}")
+                    else:
+                        print("[API] 더 이상 페이지가 없습니다.")
+                        break
+                else:
+                    print(f"[API] userChats 키가 없습니다. 응답: {data}")
+                    break
+                    
         except httpx.HTTPStatusError as e:
             print(f"HTTP Error: {e.response.status_code} - {e.response.text}")
             raise
