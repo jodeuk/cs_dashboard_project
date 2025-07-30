@@ -67,6 +67,7 @@ class ChannelTalkAPI:
         page_count = 0
         max_pages = 50  # API 문서: 연속 호출로 모든 user chats를 가져올 수 있음
         collected_ids = set()  # 수집된 ID 추적
+        consecutive_same_since = 0  # 연속으로 같은 since 값이 나온 횟수
         
         try:
             while page_count < max_pages:
@@ -128,26 +129,27 @@ class ChannelTalkAPI:
                         print(f"[API] 중복 데이터만 발견, 루프 종료")
                         break
                     
-                    # 무한 루프 방지: 같은 since 값이 반복되면 종료
-                    if data.get("next") == since:
-                        print(f"[API] 같은 since 값 반복, 무한 루프 방지로 종료")
-                        break
+
                     
                     # userChats만 수집 (messages, users 등은 제외)
                     all_userchats.extend(new_chats)
                     print(f"[API] userChats 수집 완료: {len(new_chats)} 건 (중복 제외)")
                     
-                    # 다음 페이지 여부 체크
+                                        # 다음 페이지 여부 체크
                     if data.get("next") and str(data["next"]).strip():
                         new_since = data["next"]
                         print(f"[API] next 값: {data['next']}")
                         
                         # 무한 루프 방지: 새로운 since 값인지 확인
                         if new_since == since:
-                            print(f"[API] 같은 since 값 반복, 무한 루프 방지로 종료")
-                            break
-                        
-                        # API 문서: next 값을 since로 사용해서 연속 호출
+                            consecutive_same_since += 1
+                            print(f"[API] 같은 since 값 반복 ({consecutive_same_since}번째)")
+                            if consecutive_same_since >= 2:
+                                print(f"[API] 2번 연속 같은 since 값, 무한 루프 방지로 종료")
+                                break
+                        else:
+                            consecutive_same_since = 0  # 다른 값이면 카운터 리셋
+
                         since = new_since
                         print(f"[API] 다음 페이지 since: {since}")
                     else:
