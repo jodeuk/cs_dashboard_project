@@ -81,6 +81,8 @@ class ChannelTalkAPI:
                 if since:
                     params["since"] = since
                 
+                print(f"[API] API 파라미터: {params}")
+                
                 print(f"[API] API 호출 중... since: {since}")
                 
                 async with httpx.AsyncClient(timeout=30.0) as client:
@@ -89,26 +91,25 @@ class ChannelTalkAPI:
                     data = response.json()
                 
                 print(f"[API] 응답 키들: {list(data.keys())}")
+                print(f"[API] 응답 전체 구조: {data}")
                 
                 if "userChats" in data:
                     user_chats = data["userChats"]
-                    print(f"[API] 이번 페이지 채팅 수: {len(user_chats)}")
+                    print(f"[API] 이번 페이지 userChats 수: {len(user_chats)}")
                     
                     if len(user_chats) == 0:
                         print("[API] 더 이상 데이터가 없습니다.")
                         break
                     
-                    # 날짜 필터링
-                    filtered_chats = []
-                    for chat in user_chats:
-                        first_asked_at = chat.get("firstAskedAt")
-                        if first_asked_at and start_timestamp <= first_asked_at <= end_timestamp:
-                            filtered_chats.append(chat)
+                    # userChats만 수집 (messages, users 등은 제외)
+                    all_userchats.extend(user_chats)
+                    print(f"[API] userChats 수집 완료: {len(user_chats)} 건")
                     
-                    all_userchats.extend(filtered_chats)
-                    print(f"[API] 필터링 후 이번 페이지 채팅 수: {len(filtered_chats)}")
+                    # 다음 페이지 확인 (더 자세한 로깅)
+                    print(f"[API] 응답에 next 키 존재: {'next' in data}")
+                    if "next" in data:
+                        print(f"[API] next 값: {data['next']}")
                     
-                    # 다음 페이지 확인
                     if "next" in data and data["next"]:
                         new_since = data["next"]
                         # since 값이 변경되지 않으면 무한 루프 방지
@@ -181,7 +182,7 @@ class ChannelTalkAPI:
 
     async def process_userchat_data(self, data: List[Dict]) -> pd.DataFrame:
         """UserChat 데이터를 처리하여 DataFrame으로 변환합니다."""
-        # 제공해주신 전처리 코드의 keep_keys 적용
+        # 요청하신 필드들만 추출
         keep_keys = [
             "userId",
             "mediumType", 
@@ -196,7 +197,7 @@ class ChannelTalkAPI:
         ]
 
         def convert_time(key, ms):
-            """시간 데이터 변환 함수 (제공해주신 코드 적용)"""
+            """시간 데이터 변환 함수"""
             if ms is None:
                 return None
             try:
@@ -218,40 +219,30 @@ class ChannelTalkAPI:
         processed_data = []
         
         for item in data:
-            # API 응답 구조에 맞게 수정
-            userchat = item.get("userChat", item)  # userChat 키가 있으면 사용, 없으면 item 자체
-            user = item.get("user", {})
-            
-            # 제공해주신 전처리 코드 방식으로 데이터 처리
+            # userChats 데이터에서 필요한 필드들만 추출
             new_obj = {}
             
             for key in keep_keys:
-                value = userchat.get(key)
+                value = item.get(key)
                 
-                # page, workflow는 source에서 추출 (제공해주신 코드 적용)
+                # page, workflow는 source에서 추출
                 if key == "page":
-                    value = userchat.get("source", {}).get("page")
+                    value = item.get("source", {}).get("page")
                 elif key == "workflow":
-                    value = userchat.get("source", {}).get("workflow", {}).get("id")
+                    value = item.get("source", {}).get("workflow", {}).get("id")
                 elif key in ["firstAskedAt", "operationWaitingTime", "operationAvgReplyTime", "operationTotalReplyTime", "operationResolutionTime"]:
-                    value = convert_time(key, userchat.get(key))
+                    value = convert_time(key, item.get(key))
                 
                 new_obj[key] = value
             
             # 태그에서 카테고리 정보 추출
             tags = new_obj.get("tags", [])
             
-            # 추가 정보들 (기존 기능 유지)
+            # 최종 처리된 아이템 (요청하신 필드들만)
             processed_item = {
-                **new_obj,  # 전처리된 데이터
-                "chats": userchat.get("chats", []),
-                # User 정보
-                "userName": user.get("name"),
-                "userEmail": user.get("email"),
-                "userMobileNumber": user.get("mobileNumber"),
-                "userType": user.get("type"),
-                "userMemberId": user.get("memberId"),
-                # 태그에서 추출
+                **new_obj,  # 기본 필드들
+                "chats": item.get("chats", []),  # chats 필드 추가
+                # 태그에서 추출한 카테고리들
                 "고객유형": self.extract_level(tags, "고객유형", 1),
                 "문의유형": self.extract_level(tags, "문의유형", 1),
                 "서비스유형": self.extract_level(tags, "서비스유형", 1),
