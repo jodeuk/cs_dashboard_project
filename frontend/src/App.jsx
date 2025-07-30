@@ -13,6 +13,7 @@ import ChartSection from "./components/ChartSection";
 import WordCloudSection from "./components/WordCloudSection";
 import CsatUploadSection from "./components/CsatUploadSection";
 import CsatAnalysisSection from "./components/CsatAnalysisSection";
+import CacheStatusSection from "./components/CacheStatusSection";
 
 function App() {
   // 필터 상태
@@ -293,10 +294,38 @@ function App() {
           loading={loading}
         />
 
+        {/* 평균 시간 표시 섹션 추가 */}
+        {avgTime && Object.keys(avgTime).length > 0 && (
+          <div style={{
+            backgroundColor: "white",
+            padding: "20px",
+            borderRadius: "8px",
+            marginBottom: "20px",
+            boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
+          }}>
+            <h3 style={{ marginBottom: "16px", color: "#333" }}>평균 응답 시간</h3>
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+              gap: "16px"
+            }}>
+              {Object.entries(avgTime).map(([key, value]) => (
+                <div key={key} style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: "20px", fontWeight: "bold", color: "#007bff" }}>
+                    {value}
+                  </div>
+                  <div style={{ fontSize: "14px", color: "#666" }}>{key}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <WordCloudSection params={{ start, end, ...filterVals }} loading={loading} />
         
         <CsatUploadSection onUploadSuccess={onFilter} />
         <CsatAnalysisSection data={csatData} loading={loading} />
+        <CacheStatusSection start={start} end={end} />
       </div>
     </div>
   );

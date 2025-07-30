@@ -53,6 +53,26 @@ export async function fetchSample(start, end, n = 5) {
   return apiCall('/sample', { start, end, n });
 }
 
+// 캐시 관리 API 함수들
+export async function fetchCacheStatus() {
+  return apiCall('/cache/status');
+}
+
+export async function clearCache() {
+  const response = await fetch(`${API_BASE}/cache/clear`, {
+    method: 'DELETE'
+  });
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || `캐시 삭제 실패: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function refreshCache(start, end) {
+  return apiCall('/cache/refresh', { start, end });
+}
+
 // API 상태 확인
 export async function checkApiHealth() {
   try {

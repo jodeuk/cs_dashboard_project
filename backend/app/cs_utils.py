@@ -1,6 +1,8 @@
 import os
 import httpx
 import pandas as pd
+import json
+import pickle
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import asyncio
@@ -143,8 +145,6 @@ class ChannelTalkAPI:
             print(f"API 호출 중 오류 발생: {str(e)}")
             raise
 
-
-
     def hms_to_seconds(self, time_str: str) -> int:
         """HH:MM:SS 형식을 초로 변환합니다."""
         if not time_str or time_str == "00:00:00":
@@ -173,6 +173,40 @@ class ChannelTalkAPI:
 
     async def process_userchat_data(self, data: List[Dict]) -> pd.DataFrame:
         """UserChat 데이터를 처리하여 DataFrame으로 변환합니다."""
+        # 제공해주신 전처리 코드의 keep_keys 적용
+        keep_keys = [
+            "userId",
+            "mediumType", 
+            "workflow",
+            "tags",
+            "page",
+            "firstAskedAt",
+            "operationWaitingTime",
+            "operationAvgReplyTime", 
+            "operationTotalReplyTime",
+            "operationResolutionTime"
+        ]
+
+        def convert_time(key, ms):
+            """시간 데이터 변환 함수 (제공해주신 코드 적용)"""
+            if ms is None:
+                return None
+            try:
+                if key == "firstAskedAt":
+                    from datetime import datetime
+                    dt = datetime.utcfromtimestamp(ms / 1000)
+                    return dt.replace(microsecond=0).isoformat()
+                else:
+                    from datetime import timedelta
+                    td = timedelta(milliseconds=ms)
+                    total_seconds = int(td.total_seconds())
+                    hours = total_seconds // 3600
+                    minutes = (total_seconds % 3600) // 60
+                    seconds = total_seconds % 60
+                    return f"{hours:02}:{minutes:02}:{seconds:02}"
+            except:
+                return None
+
         processed_data = []
         
         for item in data:
@@ -180,45 +214,29 @@ class ChannelTalkAPI:
             userchat = item.get("userChat", item)  # userChat 키가 있으면 사용, 없으면 item 자체
             user = item.get("user", {})
             
-            tags = userchat.get("tags", [])
+            # 제공해주신 전처리 코드 방식으로 데이터 처리
+            new_obj = {}
             
-            # firstAskedAt을 Unix timestamp에서 ISO 문자열로 변환
-            first_asked_at = userchat.get("firstAskedAt")
-            if first_asked_at and isinstance(first_asked_at, (int, float)):
-                # Unix timestamp (밀리초)를 ISO 문자열로 변환
-                from datetime import datetime
-                first_asked_at = datetime.fromtimestamp(first_asked_at / 1000).isoformat()
+            for key in keep_keys:
+                value = userchat.get(key)
+                
+                # page, workflow는 source에서 추출 (제공해주신 코드 적용)
+                if key == "page":
+                    value = userchat.get("source", {}).get("page")
+                elif key == "workflow":
+                    value = userchat.get("source", {}).get("workflow", {}).get("id")
+                elif key in ["firstAskedAt", "operationWaitingTime", "operationAvgReplyTime", "operationTotalReplyTime", "operationResolutionTime"]:
+                    value = convert_time(key, userchat.get(key))
+                
+                new_obj[key] = value
             
+            # 태그에서 카테고리 정보 추출
+            tags = new_obj.get("tags", [])
+            
+            # 추가 정보들 (기존 기능 유지)
             processed_item = {
-                # 실제 데이터 구조에 맞춘 키들
-                "userId": userchat.get("userId"),
-                "mediumType": userchat.get("mediumType"),
-                "workflow": userchat.get("workflow"),
-                "tags": tags,
+                **new_obj,  # 전처리된 데이터
                 "chats": userchat.get("chats", []),
-                "firstAskedAt": first_asked_at,
-                # operation이 붙은 키들 (우리가 사용할 키들)
-                "operationWaitingTime": userchat.get("operationWaitingTime", 0),
-                "operationAvgReplyTime": userchat.get("operationAvgReplyTime", 0),
-                "operationTotalReplyTime": userchat.get("operationTotalReplyTime", 0),
-                "operationResolutionTime": userchat.get("operationResolutionTime", 0),
-                # 추가 정보들
-                "userChatId": userchat.get("id"),
-                "channelId": userchat.get("channelId"),
-                "state": userchat.get("state"),
-                "managed": userchat.get("managed"),
-                "name": userchat.get("name"),
-                "description": userchat.get("description"),
-                "assigneeId": userchat.get("assigneeId"),
-                "teamId": userchat.get("teamId"),
-                "firstOpenedAt": userchat.get("firstOpenedAt"),
-                "openedAt": userchat.get("openedAt"),
-                "closedAt": userchat.get("closedAt"),
-                "askedAt": userchat.get("askedAt"),
-                "firstRepliedAtAfterOpen": userchat.get("firstRepliedAtAfterOpen"),
-                "replyCount": userchat.get("replyCount", 0),
-                "goalState": userchat.get("goalState"),
-                "goalEventName": userchat.get("goalEventName"),
                 # User 정보
                 "userName": user.get("name"),
                 "userEmail": user.get("email"),
@@ -239,24 +257,127 @@ class ChannelTalkAPI:
 # 전역 API 클라이언트 인스턴스
 channel_api = ChannelTalkAPI()
 
-# 전역 데이터 캐시
-_data_cache = {}
+# 서버 캐시 시스템
+class ServerCache:
+    def __init__(self, cache_dir="cache"):
+        self.cache_dir = cache_dir
+        self.ensure_cache_dir()
+    
+    def ensure_cache_dir(self):
+        """캐시 디렉토리 생성"""
+        if not os.path.exists(self.cache_dir):
+            os.makedirs(self.cache_dir)
+    
+    def get_cache_path(self, cache_key: str) -> str:
+        """캐시 파일 경로 반환"""
+        return os.path.join(self.cache_dir, f"{cache_key}.pkl")
+    
+    def get_metadata_path(self, cache_key: str) -> str:
+        """메타데이터 파일 경로 반환"""
+        return os.path.join(self.cache_dir, f"{cache_key}_metadata.json")
+    
+    def save_data(self, cache_key: str, data: pd.DataFrame, metadata: Dict):
+        """데이터와 메타데이터 저장"""
+        try:
+            # 데이터 저장
+            data_path = self.get_cache_path(cache_key)
+            data.to_pickle(data_path)
+            
+            # 메타데이터 저장
+            metadata_path = self.get_metadata_path(cache_key)
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+            
+            print(f"[CACHE] 데이터 저장 완료: {cache_key}")
+            return True
+        except Exception as e:
+            print(f"[CACHE] 데이터 저장 실패: {e}")
+            return False
+    
+    def load_data(self, cache_key: str) -> tuple[Optional[pd.DataFrame], Optional[Dict]]:
+        """데이터와 메타데이터 로드"""
+        try:
+            data_path = self.get_cache_path(cache_key)
+            metadata_path = self.get_metadata_path(cache_key)
+            
+            if not os.path.exists(data_path) or not os.path.exists(metadata_path):
+                return None, None
+            
+            # 데이터 로드
+            data = pd.read_pickle(data_path)
+            
+            # 메타데이터 로드
+            with open(metadata_path, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+            
+            print(f"[CACHE] 데이터 로드 완료: {cache_key}")
+            return data, metadata
+        except Exception as e:
+            print(f"[CACHE] 데이터 로드 실패: {e}")
+            return None, None
+    
+    def is_cache_valid(self, metadata: Dict, start_date: str, end_date: str) -> bool:
+        """캐시가 유효한지 확인"""
+        if not metadata:
+            return False
+        
+        cache_start = metadata.get("start_date")
+        cache_end = metadata.get("end_date")
+        cache_updated = metadata.get("updated_at")
+        
+        # 날짜 범위 확인
+        if cache_start != start_date or cache_end != end_date:
+            return False
+        
+        # 캐시 만료 확인 (24시간)
+        if cache_updated:
+            updated_time = datetime.fromisoformat(cache_updated)
+            if datetime.now() - updated_time > timedelta(hours=24):
+                return False
+        
+        return True
+
+# 전역 캐시 인스턴스
+server_cache = ServerCache()
 
 async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
     """캐시된 데이터를 가져오거나 API에서 새로 가져옵니다."""
-    cache_key = f"{start_date}_{end_date}"
+    cache_key = f"userchats_{start_date}_{end_date}"
     
-    if cache_key in _data_cache:
-        return _data_cache[cache_key]
+    # 캐시에서 데이터 로드 시도
+    cached_data, metadata = server_cache.load_data(cache_key)
+    
+    # 캐시가 유효한지 확인
+    if cached_data is not None and server_cache.is_cache_valid(metadata, start_date, end_date):
+        print(f"[CACHE] 캐시된 데이터 사용: {len(cached_data)} 건")
+        return cached_data
     
     try:
+        print(f"[API] 새로운 데이터 조회: {start_date} ~ {end_date}")
         raw_data = await channel_api.get_userchats(start_date, end_date)
         df = await channel_api.process_userchat_data(raw_data)
-        _data_cache[cache_key] = df
+        
+        # 메타데이터 생성
+        metadata = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "updated_at": datetime.now().isoformat(),
+            "data_count": len(df),
+            "source": "api"
+        }
+        
+        # 캐시에 저장
+        server_cache.save_data(cache_key, df, metadata)
+        
         print(f"데이터 로드 성공: {len(df)} 건")
         return df
     except Exception as e:
         print(f"데이터 로드 실패: {e}")
+        # 캐시된 데이터가 있으면 사용
+        if cached_data is not None:
+            print(f"[CACHE] API 실패, 캐시된 데이터 사용: {len(cached_data)} 건")
+            return cached_data
+        
         # 실제 데이터 구조에 맞춘 샘플 데이터
         sample_data = [
             {
@@ -265,10 +386,10 @@ async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
                 "workflow": "support",
                 "tags": ["고객유형/일반고객", "문의유형/기술지원", "서비스유형/웹서비스"],
                 "firstAskedAt": "2025-06-15T10:00:00",
-                "operationWaitingTime": 300,
-                "operationAvgReplyTime": 600,
-                "operationTotalReplyTime": 1800,
-                "operationResolutionTime": 3600,
+                "operationWaitingTime": "00:05:00",
+                "operationAvgReplyTime": "00:10:00",
+                "operationTotalReplyTime": "00:30:00",
+                "operationResolutionTime": "01:00:00",
                 "cs_satisfaction": None,
                 "chats": ["안녕하세요", "로그인이 안됩니다", "도와주세요"]
             },
@@ -278,10 +399,10 @@ async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
                 "workflow": "billing",
                 "tags": ["고객유형/기업고객", "문의유형/결제문의", "서비스유형/결제서비스"],
                 "firstAskedAt": "2025-06-20T14:30:00",
-                "operationWaitingTime": 180,
-                "operationAvgReplyTime": 450,
-                "operationTotalReplyTime": 1200,
-                "operationResolutionTime": 2400,
+                "operationWaitingTime": "00:03:00",
+                "operationAvgReplyTime": "00:07:30",
+                "operationTotalReplyTime": "00:20:00",
+                "operationResolutionTime": "00:40:00",
                 "cs_satisfaction": None,
                 "chats": ["환불 요청합니다", "결제 취소 부탁드립니다"]
             },
@@ -291,10 +412,10 @@ async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
                 "workflow": "account",
                 "tags": ["고객유형/일반고객", "문의유형/계정문의", "서비스유형/계정서비스"],
                 "firstAskedAt": "2025-06-25T09:15:00",
-                "operationWaitingTime": 120,
-                "operationAvgReplyTime": 300,
-                "operationTotalReplyTime": 900,
-                "operationResolutionTime": 1800,
+                "operationWaitingTime": "00:02:00",
+                "operationAvgReplyTime": "00:05:00",
+                "operationTotalReplyTime": "00:15:00",
+                "operationResolutionTime": "00:30:00",
                 "cs_satisfaction": None,
                 "chats": ["비밀번호를 변경하고 싶습니다", "이메일 인증이 안됩니다"]
             },
@@ -304,10 +425,10 @@ async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
                 "workflow": "technical",
                 "tags": ["고객유형/기업고객", "문의유형/기술지원", "서비스유형/API서비스"],
                 "firstAskedAt": "2025-06-28T16:45:00",
-                "operationWaitingTime": 600,
-                "operationAvgReplyTime": 900,
-                "operationTotalReplyTime": 2700,
-                "operationResolutionTime": 5400,
+                "operationWaitingTime": "00:10:00",
+                "operationAvgReplyTime": "00:15:00",
+                "operationTotalReplyTime": "00:45:00",
+                "operationResolutionTime": "01:30:00",
                 "cs_satisfaction": None,
                 "chats": ["API 연동에 문제가 있습니다", "인증 토큰이 만료되었습니다"]
             }
@@ -317,16 +438,22 @@ async def get_cached_data(start_date: str, end_date: str) -> pd.DataFrame:
 def get_filtered_df(df: pd.DataFrame, start: str, end: str, 
                    고객유형="전체", 문의유형="전체", 서비스유형="전체", 
                    문의유형_2차="전체", 서비스유형_2차="전체") -> pd.DataFrame:
-    """필터링된 DataFrame을 반환합니다."""
+    """필터링된 DataFrame을 반환합니다. (제공해주신 전처리 코드 방식 적용)"""
     temp = df.copy()
     
-    # 날짜 컬럼을 datetime으로 변환
-    temp['firstAskedAt'] = pd.to_datetime(temp['firstAskedAt'])
-    start_date = pd.to_datetime(start)
-    end_date = pd.to_datetime(end)
+    # 1. 날짜 필터링 (ISO 문자열 형식 처리)
+    if 'firstAskedAt' in temp.columns:
+        # ISO 문자열을 datetime으로 변환
+        temp['firstAskedAt'] = pd.to_datetime(temp['firstAskedAt'], errors='coerce')
+        start_date = pd.to_datetime(start)
+        end_date = pd.to_datetime(end)
+        
+        # 유효한 날짜만 필터링
+        temp = temp[(temp['firstAskedAt'].notna()) & 
+                   (temp['firstAskedAt'] >= start_date) & 
+                   (temp['firstAskedAt'] <= end_date)]
     
-    temp = temp[(temp['firstAskedAt'] >= start_date) & (temp['firstAskedAt'] <= end_date)]
-    
+    # 2. 카테고리별 필터링 (제공해주신 전처리 코드의 keep_keys 방식)
     if 고객유형 != "전체": 
         temp = temp[temp["고객유형"] == 고객유형]
     if 문의유형 != "전체": 
@@ -337,6 +464,19 @@ def get_filtered_df(df: pd.DataFrame, start: str, end: str,
         temp = temp[temp["서비스유형"] == 서비스유형]
     if 서비스유형_2차 != "전체": 
         temp = temp[temp["서비스유형_2차"] == 서비스유형_2차]
+    
+    # 3. 필수 키들이 있는지 확인하고 정리
+    required_keys = ["userId", "mediumType", "workflow", "tags", "firstAskedAt"]
+    for key in required_keys:
+        if key not in temp.columns:
+            temp[key] = None
+    
+    # 4. operation 시간 데이터 정리 (제공해주신 convert_time 함수 방식)
+    time_keys = ["operationWaitingTime", "operationAvgReplyTime", "operationTotalReplyTime", "operationResolutionTime"]
+    for key in time_keys:
+        if key in temp.columns:
+            # 시간 데이터가 문자열이 아닌 경우 변환
+            temp[key] = temp[key].apply(lambda x: x if isinstance(x, str) else None)
     
     return temp.reset_index(drop=True)
 

@@ -73,6 +73,94 @@ async def health():
 async def test():
     return {"message": "API is working!"}
 
+# 캐시 관리 API 엔드포인트 추가
+@app.get("/api/cache/status")
+async def cache_status():
+    """캐시 상태 확인"""
+    try:
+        from .cs_utils import server_cache
+        import os
+        
+        cache_dir = server_cache.cache_dir
+        if not os.path.exists(cache_dir):
+            return {
+                "cache_enabled": True,
+                "cache_dir": cache_dir,
+                "cache_files": 0,
+                "total_size_mb": 0,
+                "message": "캐시 디렉토리가 없습니다."
+            }
+        
+        cache_files = []
+        total_size = 0
+        
+        for filename in os.listdir(cache_dir):
+            if filename.endswith('.pkl'):
+                file_path = os.path.join(cache_dir, filename)
+                file_size = os.path.getsize(file_path)
+                cache_files.append({
+                    "filename": filename,
+                    "size_mb": round(file_size / 1024 / 1024, 2),
+                    "modified": datetime.fromtimestamp(os.path.getmtime(file_path)).isoformat()
+                })
+                total_size += file_size
+        
+        return {
+            "cache_enabled": True,
+            "cache_dir": cache_dir,
+            "cache_files": len(cache_files),
+            "total_size_mb": round(total_size / 1024 / 1024, 2),
+            "files": cache_files
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"캐시 상태 조회 실패: {str(e)}")
+
+@app.delete("/api/cache/clear")
+async def clear_cache():
+    """캐시 삭제"""
+    try:
+        from .cs_utils import server_cache
+        import os
+        import glob
+        
+        cache_dir = server_cache.cache_dir
+        if os.path.exists(cache_dir):
+            # .pkl 파일과 _metadata.json 파일 삭제
+            for pattern in ["*.pkl", "*_metadata.json"]:
+                for file_path in glob.glob(os.path.join(cache_dir, pattern)):
+                    os.remove(file_path)
+        
+        return {"message": "캐시가 성공적으로 삭제되었습니다."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"캐시 삭제 실패: {str(e)}")
+
+@app.get("/api/cache/refresh")
+async def refresh_cache(start: str = Query(...), end: str = Query(...)):
+    """특정 기간의 캐시 강제 새로고침"""
+    try:
+        from .cs_utils import server_cache
+        
+        cache_key = f"userchats_{start}_{end}"
+        data_path = server_cache.get_cache_path(cache_key)
+        metadata_path = server_cache.get_metadata_path(cache_key)
+        
+        # 기존 캐시 파일 삭제
+        if os.path.exists(data_path):
+            os.remove(data_path)
+        if os.path.exists(metadata_path):
+            os.remove(metadata_path)
+        
+        # 새로운 데이터 조회
+        df = await get_cached_data(start, end)
+        
+        return {
+            "message": "캐시가 성공적으로 새로고침되었습니다.",
+            "data_count": len(df),
+            "cache_key": cache_key
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"캐시 새로고침 실패: {str(e)}")
+
 @app.get("/api/debug-channel-api")
 async def debug_channel_api():
     """Channel Talk API 상세 디버깅"""
@@ -260,19 +348,38 @@ async def avg_times(
         ]
         
         df = await get_cached_data(start, end)
-        
-        # 날짜 컬럼을 datetime으로 변환
-        df['firstAskedAt'] = pd.to_datetime(df['firstAskedAt'])
-        start_date = pd.to_datetime(start)
-        end_date = pd.to_datetime(end)
-        
         temp = get_filtered_df(df, start, end, 고객유형, 문의유형, 서비스유형)
+        
+        def parse_time_to_seconds(time_str):
+            """HH:MM:SS 형식의 시간을 초로 변환 (제공해주신 전처리 코드 방식)"""
+            if not time_str or not isinstance(time_str, str):
+                return 0
+            try:
+                parts = time_str.split(":")
+                if len(parts) == 3:
+                    hours, minutes, seconds = map(int, parts)
+                    return hours * 3600 + minutes * 60 + seconds
+                return 0
+            except:
+                return 0
         
         result = {}
         for key, label in time_keys:
             if key in temp.columns:
-                avg_time = temp[key].mean()
-                result[label] = float(avg_time) if pd.notna(avg_time) else 0.0
+                # 시간 문자열을 초로 변환하여 평균 계산
+                time_seconds = temp[key].apply(parse_time_to_seconds)
+                avg_seconds = time_seconds.mean()
+                
+                if pd.notna(avg_seconds) and avg_seconds > 0:
+                    # 평균 초를 HH:MM:SS 형식으로 변환
+                    hours = int(avg_seconds // 3600)
+                    minutes = int((avg_seconds % 3600) // 60)
+                    seconds = int(avg_seconds % 60)
+                    result[label] = f"{hours:02}:{minutes:02}:{seconds:02}"
+                else:
+                    result[label] = "00:00:00"
+            else:
+                result[label] = "00:00:00"
         
         return result
     except Exception as e:
