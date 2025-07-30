@@ -62,14 +62,11 @@ class ChannelTalkAPI:
         if not self.access_key or not self.access_secret:
             raise ValueError("CHANNEL_ACCESS_KEY 또는 CHANNEL_ACCESS_SECRET 환경변수가 설정되지 않았습니다.")
         
-        # 날짜를 타임스탬프로 변환
-        start_timestamp = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp() * 1000)
-        end_timestamp = int(datetime.strptime(end_date, "%Y-%m-%d").timestamp() * 1000)
-        
         all_userchats = []
-        since = None
+        since = None  # API 문서: since 파라미터를 비워두면 목록의 시작점
         page_count = 0
-        max_pages = 50  # 무한 루프 방지
+        max_pages = 50  # API 문서: 연속 호출로 모든 user chats를 가져올 수 있음
+        collected_ids = set()  # 수집된 ID 추적
         
         try:
             while page_count < max_pages:
@@ -77,12 +74,16 @@ class ChannelTalkAPI:
                 print(f"[API] {page_count}번째 페이지 조회 중...")
                 
                 url = f"{self.base_url}/open/v5/user-chats"
-                params = {"limit": limit}
+                params = {
+                    "limit": limit,
+                    "state": "closed"  # 닫힌 채팅만 조회
+                }
                 if since:
                     params["since"] = since
+                # API 문서에 따르면 limit은 [1, 500] 범위로 제한됨
+                # since 파라미터를 비워두면 목록의 시작점
                 
                 print(f"[API] API 파라미터: {params}")
-                
                 print(f"[API] API 호출 중... since: {since}")
                 
                 async with httpx.AsyncClient(timeout=30.0) as client:
@@ -91,7 +92,16 @@ class ChannelTalkAPI:
                     data = response.json()
                 
                 print(f"[API] 응답 키들: {list(data.keys())}")
-                print(f"[API] 응답 전체 구조: {data}")
+                print(f"[API] 응답 원본 (첫 번째 페이지만):")
+                print(json.dumps(data, indent=2, ensure_ascii=False))
+                print(f"[API] userChats 개수: {len(data.get('userChats', []))}")
+                print(f"[API] next 값: {data.get('next')}")
+                
+                # next 키를 먼저 확인 (응답 최상위 레벨)
+                print(f"[API] 응답 최상위 레벨 키들: {list(data.keys())}")
+                print(f"[API] next 키 존재 여부: {'next' in data}")
+                if 'next' in data:
+                    print(f"[API] next 값: {data['next']}")
                 
                 if "userChats" in data:
                     user_chats = data["userChats"]
@@ -101,21 +111,29 @@ class ChannelTalkAPI:
                         print("[API] 더 이상 데이터가 없습니다.")
                         break
                     
+                    # 중복 데이터 체크 및 수집
+                    new_chats = []
+                    for chat in user_chats:
+                        chat_id = chat.get("id")
+                        if chat_id and chat_id not in collected_ids:
+                            new_chats.append(chat)
+                            collected_ids.add(chat_id)
+                    
+                    if len(new_chats) == 0:
+                        print(f"[API] 중복 데이터만 발견, 루프 종료")
+                        break
+                    
                     # userChats만 수집 (messages, users 등은 제외)
-                    all_userchats.extend(user_chats)
-                    print(f"[API] userChats 수집 완료: {len(user_chats)} 건")
+                    all_userchats.extend(new_chats)
+                    print(f"[API] userChats 수집 완료: {len(new_chats)} 건 (중복 제외)")
                     
-                    # 다음 페이지 확인 (더 자세한 로깅)
+                    # 다음 페이지 여부 체크 (공백까지 안전하게)
                     print(f"[API] 응답에 next 키 존재: {'next' in data}")
-                    if "next" in data:
-                        print(f"[API] next 값: {data['next']}")
-                    
-                    if "next" in data and data["next"]:
+                    if data.get("next") and str(data["next"]).strip():
                         new_since = data["next"]
-                        # since 값이 변경되지 않으면 무한 루프 방지
-                        if new_since == since:
-                            print(f"[API] since 값이 변경되지 않음, 루프 종료: {since}")
-                            break
+                        print(f"[API] next 값: {data['next']}")
+                        
+                        # API 문서: next 값을 since로 사용해서 연속 호출
                         since = new_since
                         print(f"[API] 다음 페이지 since: {since}")
                     else:
@@ -124,7 +142,7 @@ class ChannelTalkAPI:
                 else:
                     print(f"[API] userChats 키가 없습니다. 응답: {data}")
                     break
-                    
+                        
         except httpx.HTTPStatusError as e:
             print(f"HTTP Error: {e.response.status_code} - {e.response.text}")
             raise
@@ -133,7 +151,22 @@ class ChannelTalkAPI:
             raise
         
         print(f"[API] 총 수집된 채팅 수: {len(all_userchats)}")
-        return all_userchats
+        
+        # 날짜 필터링 적용
+        filtered_userchats = []
+        for chat in all_userchats:
+            first_asked_at = chat.get("firstAskedAt")
+            if first_asked_at:
+                # Unix timestamp를 datetime으로 변환
+                chat_date = datetime.fromtimestamp(first_asked_at / 1000)
+                chat_date_str = chat_date.strftime("%Y-%m-%d")
+                
+                # 지정된 기간 내에 있는지 확인
+                if start_date <= chat_date_str <= end_date:
+                    filtered_userchats.append(chat)
+        
+        print(f"[API] 날짜 필터링 후 채팅 수: {len(filtered_userchats)} (기간: {start_date} ~ {end_date})")
+        return filtered_userchats
 
     async def get_userchat_by_id(self, userchat_id: str) -> Dict:
         """특정 UserChat ID로 상세 정보를 가져옵니다."""
