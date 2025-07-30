@@ -258,23 +258,14 @@ async def test_channel_api():
 @app.get("/api/filter-options")
 async def filter_options(start: str = Query(...), end: str = Query(...)):
     try:
-        # 타임아웃을 줄여서 빠르게 응답하도록 수정
-        import asyncio
-        try:
-            df = await asyncio.wait_for(get_cached_data(start, end), timeout=10.0)
-        except asyncio.TimeoutError:
-            print(f"[FILTER-OPTIONS] API 타임아웃 발생, 샘플 데이터 반환")
-            # 타임아웃 시 샘플 데이터 반환
-            return {
-                "고객유형": ["전체", "일반고객", "기업고객", "VIP고객"],
-                "문의유형": ["전체", "기술지원", "결제문의", "계정문의", "서비스문의"],
-                "서비스유형": ["전체", "웹서비스", "결제서비스", "계정서비스", "모바일서비스"],
-                "문의유형_2차": ["전체", "로그인", "환불", "비밀번호", "결제오류"],
-                "서비스유형_2차": ["전체", "웹", "앱", "API", "데이터베이스"],
-            }
+        print(f"[FILTER-OPTIONS] 필터 옵션 요청: {start} ~ {end}")
         
-        # 데이터가 비어있거나 컬럼이 없는 경우 빈 배열 반환
-        if df.empty or "고객유형" not in df.columns:
+        # 캐시된 데이터에서 필터 옵션 생성
+        df = await get_cached_data(start, end)
+        
+        # 데이터가 비어있는 경우 빈 배열 반환
+        if df.empty:
+            print(f"[FILTER-OPTIONS] 데이터가 비어있음")
             return {
                 "고객유형": ["전체"],
                 "문의유형": ["전체"],
@@ -283,22 +274,61 @@ async def filter_options(start: str = Query(...), end: str = Query(...)):
                 "서비스유형_2차": ["전체"],
             }
         
-        return {
-            "고객유형": ["전체"] + sorted(df["고객유형"].dropna().unique().tolist()),
-            "문의유형": ["전체"] + sorted(df["문의유형"].dropna().unique().tolist()),
-            "서비스유형": ["전체"] + sorted(df["서비스유형"].dropna().unique().tolist()),
-            "문의유형_2차": ["전체"] + sorted(df["문의유형_2차"].dropna().unique().tolist()),
-            "서비스유형_2차": ["전체"] + sorted(df["서비스유형_2차"].dropna().unique().tolist()),
-        }
+        # 실제 데이터에서 고유값 추출
+        filter_options = {}
+        
+        # 고객유형
+        if "고객유형" in df.columns:
+            customer_types = df["고객유형"].dropna().unique().tolist()
+            filter_options["고객유형"] = ["전체"] + sorted(customer_types)
+            print(f"[FILTER-OPTIONS] 고객유형: {len(customer_types)}개")
+        else:
+            filter_options["고객유형"] = ["전체"]
+        
+        # 문의유형
+        if "문의유형" in df.columns:
+            inquiry_types = df["문의유형"].dropna().unique().tolist()
+            filter_options["문의유형"] = ["전체"] + sorted(inquiry_types)
+            print(f"[FILTER-OPTIONS] 문의유형: {len(inquiry_types)}개")
+        else:
+            filter_options["문의유형"] = ["전체"]
+        
+        # 서비스유형
+        if "서비스유형" in df.columns:
+            service_types = df["서비스유형"].dropna().unique().tolist()
+            filter_options["서비스유형"] = ["전체"] + sorted(service_types)
+            print(f"[FILTER-OPTIONS] 서비스유형: {len(service_types)}개")
+        else:
+            filter_options["서비스유형"] = ["전체"]
+        
+        # 문의유형_2차
+        if "문의유형_2차" in df.columns:
+            inquiry_types_2nd = df["문의유형_2차"].dropna().unique().tolist()
+            filter_options["문의유형_2차"] = ["전체"] + sorted(inquiry_types_2nd)
+            print(f"[FILTER-OPTIONS] 문의유형_2차: {len(inquiry_types_2nd)}개")
+        else:
+            filter_options["문의유형_2차"] = ["전체"]
+        
+        # 서비스유형_2차
+        if "서비스유형_2차" in df.columns:
+            service_types_2nd = df["서비스유형_2차"].dropna().unique().tolist()
+            filter_options["서비스유형_2차"] = ["전체"] + sorted(service_types_2nd)
+            print(f"[FILTER-OPTIONS] 서비스유형_2차: {len(service_types_2nd)}개")
+        else:
+            filter_options["서비스유형_2차"] = ["전체"]
+        
+        print(f"[FILTER-OPTIONS] 필터 옵션 생성 완료: {filter_options}")
+        return filter_options
+        
     except Exception as e:
         print(f"[FILTER-OPTIONS] 오류 발생: {e}")
-        # 오류 발생 시에도 샘플 데이터 반환
+        # 오류 발생 시 빈 옵션 반환
         return {
-            "고객유형": ["전체", "일반고객", "기업고객", "VIP고객"],
-            "문의유형": ["전체", "기술지원", "결제문의", "계정문의", "서비스문의"],
-            "서비스유형": ["전체", "웹서비스", "결제서비스", "계정서비스", "모바일서비스"],
-            "문의유형_2차": ["전체", "로그인", "환불", "비밀번호", "결제오류"],
-            "서비스유형_2차": ["전체", "웹", "앱", "API", "데이터베이스"],
+            "고객유형": ["전체"],
+            "문의유형": ["전체"],
+            "서비스유형": ["전체"],
+            "문의유형_2차": ["전체"],
+            "서비스유형_2차": ["전체"],
         }
 
 # 4-2. 기간별(월/주) 문의량
