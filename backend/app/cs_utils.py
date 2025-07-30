@@ -63,101 +63,60 @@ class ChannelTalkAPI:
             raise ValueError("CHANNEL_ACCESS_KEY 또는 CHANNEL_ACCESS_SECRET 환경변수가 설정되지 않았습니다.")
         
         all_userchats = []
-        since = None  # API 문서: since 파라미터를 비워두면 목록의 시작점
+        since = None
         page_count = 0
-        max_pages = 50  # API 문서: 연속 호출로 모든 user chats를 가져올 수 있음
-        collected_ids = set()  # 수집된 ID 추적
-        consecutive_same_since = 0  # 연속으로 같은 since 값이 나온 횟수
+        max_pages = 100
+        collected_ids = set()
+        last_next = None
+        consecutive_same_next = 0
         
         try:
             while page_count < max_pages:
                 page_count += 1
-                print(f"[API] {page_count}번째 페이지 조회 중...")
-                
                 url = f"{self.base_url}/open/v5/user-chats"
-                params = {
-                    "limit": limit,
-                    "state": "closed"  # 닫힌 채팅만 조회
-                }
+                params = {"limit": limit, "state": "closed"}
                 if since:
                     params["since"] = since
-                # API 문서에 따르면 limit은 [1, 500] 범위로 제한됨
-                # since 파라미터를 비워두면 목록의 시작점
-                
-                print(f"[API] API 파라미터: {params}")
-                print(f"[API] API 호출 중... since: {since}")
-                
+
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     response = await client.get(url, headers=self.headers, params=params)
                     response.raise_for_status()
                     data = response.json()
-                
-                # userChats만 로그 출력 (실제 사용하는 데이터만)
+
                 user_chats = data.get('userChats', [])
-                print(f"[API] userChats 개수: {len(user_chats)}")
-                print(f"[API] next 값: {data.get('next')}")
-                
-                # 첫 번째 페이지만 상세 정보 출력
-                if page_count == 1 and user_chats:
-                    print(f"[API] 첫 번째 userChat 샘플:")
-                    sample_chat = user_chats[0]
-                    print(f"  - ID: {sample_chat.get('id', 'N/A')}")
-                    print(f"  - firstAskedAt: {sample_chat.get('firstAskedAt', 'N/A')}")
-                    print(f"  - createdAt: {sample_chat.get('createdAt', 'N/A')}")
-                
-                # next 키 확인 (간소화)
-                if 'next' in data:
-                    print(f"[API] next 값: {data['next']}")
-                
-                if "userChats" in data:
-                    user_chats = data["userChats"]
-                    print(f"[API] 이번 페이지 userChats 수: {len(user_chats)}")
-                    
-                    if len(user_chats) == 0:
-                        print("[API] 더 이상 데이터가 없습니다.")
-                        break
-                    
-                    # 중복 데이터 체크 및 수집
-                    new_chats = []
-                    for chat in user_chats:
-                        chat_id = chat.get("id")
-                        if chat_id and chat_id not in collected_ids:
-                            new_chats.append(chat)
-                            collected_ids.add(chat_id)
-                    
-                    if len(new_chats) == 0:
-                        print(f"[API] 중복 데이터만 발견, 루프 종료")
-                        break
-                    
+                next_value = data.get('next', None)
 
-                    
-                    # userChats만 수집 (messages, users 등은 제외)
-                    all_userchats.extend(new_chats)
-                    print(f"[API] userChats 수집 완료: {len(new_chats)} 건 (중복 제외)")
-                    
-                                        # 다음 페이지 여부 체크
-                    if data.get("next") and str(data["next"]).strip():
-                        new_since = data["next"]
-                        print(f"[API] next 값: {data['next']}")
-                        
-                        # 무한 루프 방지: 새로운 since 값인지 확인
-                        if new_since == since:
-                            consecutive_same_since += 1
-                            print(f"[API] 같은 since 값 반복 ({consecutive_same_since}번째)")
-                            if consecutive_same_since >= 2:
-                                print(f"[API] 2번 연속 같은 since 값, 무한 루프 방지로 종료")
-                                break
-                        else:
-                            consecutive_same_since = 0  # 다른 값이면 카운터 리셋
+                print(f"[API] {page_count}번째 | since: {since} | userChats: {len(user_chats)} | next: {next_value}")
 
-                        since = new_since
-                        print(f"[API] 다음 페이지 since: {since}")
-                    else:
-                        print("[API] 더 이상 페이지가 없습니다.")
+                # 중복/빈 페이지 체크
+                if not user_chats:
+                    print("[API] 더 이상 userChats 없음, 종료")
+                    break
+
+                # 중복 방지: 수집되지 않은 것만
+                new_chats = [chat for chat in user_chats if chat.get("id") not in collected_ids]
+                for chat in new_chats:
+                    collected_ids.add(chat.get("id"))
+                all_userchats.extend(new_chats)
+
+                # 종료 조건: next 없음
+                if not next_value or not str(next_value).strip():
+                    print("[API] next 없음, 종료")
+                    break
+
+                # 무한루프 방지: 동일 next 반복
+                if next_value == last_next:
+                    consecutive_same_next += 1
+                    print(f"[API] 동일 next 반복 {consecutive_same_next}회")
+                    if consecutive_same_next >= 2:  # (또는 3회 등)
+                        print("[API] 무한루프 방지, 종료")
                         break
                 else:
-                    print(f"[API] userChats 키가 없습니다. 응답: {data}")
-                    break
+                    consecutive_same_next = 0
+
+                # 다음 루프 준비
+                since = next_value
+                last_next = next_value
                         
         except httpx.HTTPStatusError as e:
             print(f"HTTP Error: {e.response.status_code} - {e.response.text}")
