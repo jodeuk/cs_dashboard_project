@@ -522,8 +522,28 @@ async def get_statistics(start: str = Query(...), end: str = Query(...)):
         def safe_mean(series):
             if series.empty or series.isna().all():
                 return 0.0
-            mean_val = series.mean()
-            return float(mean_val) if pd.notna(mean_val) else 0.0
+            # 시간 데이터를 초 단위로 변환
+            try:
+                # HH:MM:SS 형식을 초로 변환
+                def time_to_seconds(time_str):
+                    if pd.isna(time_str) or not isinstance(time_str, str):
+                        return 0
+                    try:
+                        parts = time_str.split(':')
+                        if len(parts) == 3:
+                            hours, minutes, seconds = map(int, parts)
+                            return hours * 3600 + minutes * 60 + seconds
+                        return 0
+                    except:
+                        return 0
+                
+                # 시간을 초로 변환
+                seconds_series = series.apply(time_to_seconds)
+                mean_seconds = seconds_series.mean()
+                return float(mean_seconds) if pd.notna(mean_seconds) else 0.0
+            except Exception as e:
+                print(f"[STATISTICS] 시간 평균 계산 오류: {e}")
+                return 0.0
         
         def safe_nunique(series):
             if series.empty:
