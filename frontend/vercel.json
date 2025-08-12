@@ -1,7 +1,0 @@
-{
-  "buildCommand": "node node_modules/react-scripts/scripts/build.js",
-  "outputDirectory": "build",
-  "framework": "create-react-app",
-  "installCommand": "npm install",
-  "devCommand": "npm start"
-} 

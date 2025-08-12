@@ -1,7 +1,0 @@
-fastapi
-uvicorn
-pandas
-httpx
-python-dotenv
-openpyxl
-xlrd 

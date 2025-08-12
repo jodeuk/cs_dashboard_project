@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: cs_dashboard_backend
+    ports:
+      - "8081:8000"
+    env_file:
+      - ../.env
+    volumes:
+      - cache_data:/data/cache
+      - ../backend:/app/backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - cs_dashboard_network
+
+  frontend:
+    build: 
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        - REACT_APP_API_BASE=${REACT_APP_API_BASE:-http://localhost:8081/api}
+    container_name: cs_dashboard_frontend
+    ports:
+      - "8080:3000"
+    environment:
+      - REACT_APP_API_BASE=${REACT_APP_API_BASE:-http://localhost:8081/api}
+    depends_on:
+      - backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - cs_dashboard_network
+
+networks:
+  cs_dashboard_network:
+    driver: bridge
+
+volumes:
+  cache_data:
+    driver: local

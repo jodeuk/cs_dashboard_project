@@ -1,126 +1,126 @@
-const API_BASE = process.env.REACT_APP_API_BASE || "https://cs-dashboard-project.onrender.com/api";
+import axios from "axios";
 
-// 기본 API 호출 함수
-async function apiCall(endpoint, params = {}) {
-  const qs = new URLSearchParams(params).toString();
-  const url = `${API_BASE}${endpoint}${qs ? `?${qs}` : ''}`;
+// API 기본 URL (환경변수, 기본값)
+const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:8000/api";
 
-  console.log(`🌐 API 호출: ${url}`);
+// axios 인스턴스 생성 (공통 옵션)
+const api = axios.create({
+  baseURL: API_BASE,
+  timeout: 60000, // 60초 타임아웃
+  headers: {
+    "Content-Type": "application/json",
+  },
+});
 
+// 요청/응답 인터셉터 (디버깅/토큰 등 추가 가능)
+api.interceptors.request.use(
+  (config) => {
+    // 필요 시 토큰 등 헤더 주입 가능
+    // config.headers.Authorization = `Bearer ${token}`;
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+api.interceptors.response.use(
+  (response) => response.data,
+  (error) => {
+    // 더 친절한 에러 처리
+    if (error.code === "ECONNABORTED") {
+      return Promise.reject(new Error("API 호출 시간 초과 (60초)"));
+    }
+    if (!window.navigator.onLine) {
+      return Promise.reject(new Error("네트워크 연결이 없습니다."));
+    }
+    if (error.response) {
+      // 서버가 응답을 반환한 경우
+      const detail = error.response.data?.detail || `API 호출 실패: ${error.response.status}`;
+      return Promise.reject(new Error(detail));
+    }
+    // 기타 네트워크 에러
+    return Promise.reject(new Error(error.message || "알 수 없는 오류 발생"));
+  }
+);
+
+// 공통 호출 함수 (GET, POST, DELETE, PUT 지원)
+export async function apiCall(method, endpoint, params = {}, data = {}) {
   try {
-    // 네트워크 상태 확인
-    if (!navigator.onLine) {
-      throw new Error('네트워크 연결이 없습니다.');
-    }
-
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      // 타임아웃 설정
-      signal: AbortSignal.timeout(30000) // 30초
-    });
-    
-    console.log(`📡 응답 상태: ${response.status} ${response.statusText}`);
-    
-    if (!response.ok) {
-      let errorDetail = `API 호출 실패: ${response.status}`;
-      try {
-        const error = await response.json();
-        errorDetail = error.detail || errorDetail;
-      } catch (e) {
-        console.warn('에러 응답 파싱 실패:', e);
-      }
-      throw new Error(errorDetail);
-    }
-    
-    const data = await response.json();
-    console.log(`✅ API 응답 성공: ${endpoint}`, data);
-    return data;
-  } catch (error) {
-    console.error(`❌ API 호출 실패: ${endpoint}`, error);
-    
-    // 더 자세한 에러 정보
-    if (error.name === 'AbortError') {
-      throw new Error('API 호출 시간 초과 (30초)');
-    } else if (error.message.includes('Failed to fetch')) {
-      throw new Error('서버에 연결할 수 없습니다. 네트워크 연결을 확인해주세요.');
+    const config = { method, url: endpoint };
+    if (method === "get" || method === "delete") {
+      config.params = params;
     } else {
-      throw error;
+      config.data = data;
+      config.params = params; // 필요시 쿼리도 같이 보낼 수 있음
     }
+    const res = await api(config);
+    // 콘솔 로그 남기기
+    console.log(`✅ ${method.toUpperCase()} ${endpoint}`, res);
+    return res;
+  } catch (err) {
+    console.error(`❌ ${method.toUpperCase()} ${endpoint}`, err.message);
+    throw err;
   }
 }
 
-// 필터 옵션 조회 (기간 파라미터 필요)
-export async function fetchFilterOptions(start, end) {
-  return apiCall('/filter-options', { start, end });
+// 기존 API들 함수화 (호환성을 위해 params 통일)
+export function fetchFilterOptions(start, end, forceRefresh = false) {
+  return apiCall("get", "/filter-options", { start, end, force_refresh: forceRefresh });
+}
+export function fetchPeriodData(params) {
+  return apiCall("get", "/period-data", params);
+}
+export function fetchAvgTimes(params) {
+  return apiCall("get", "/avg-times", params);
+}
+export function fetchCustomerTypeCS(params) {
+  return apiCall("get", "/customer-type-cs", params);
+}
+export function fetchCsatAnalysis(params) {
+  return apiCall("get", "/csat-analysis", params);
 }
 
-// 기간별 문의량 조회
-export async function fetchPeriodCounts(params) {
-  return apiCall('/period-counts', params);
+export function fetchUserchats(start, end, forceRefresh = false) {
+  return apiCall("get", "/userchats", { start, end, force_refresh: forceRefresh });
 }
 
-// 평균 응답 시간 조회
-export async function fetchAvgTimes(params) {
-  return apiCall('/avg-times', params);
+export function fetchStatistics(start, end) {
+  return apiCall("get", "/statistics", { start, end });
+}
+export function fetchSample(start, end, n = 5) {
+  return apiCall("get", "/sample", { start, end, n });
 }
 
-// 고객유형별 CS 문의량 조회
-export async function fetchCustomerTypeCS(params) {
-  return apiCall('/customer-type-cs', params);
+// 캐시 관리 API
+export function fetchCacheStatus() {
+  return apiCall("get", "/cache/status");
+}
+export function checkCacheForPeriod(start, end) {
+  return apiCall("get", "/cache/check", { start, end });
+}
+export function clearCache() {
+  return apiCall("delete", "/cache/clear");
+}
+export function refreshCache(start, end) {
+  return apiCall("get", "/cache/refresh", { start, end });
 }
 
-// CSAT 분석 데이터 조회
-export async function fetchCsatAnalysis(params) {
-  return apiCall('/csat-analysis', params);
-}
-
-// 워드클라우드 데이터 조회
-export async function fetchWordCloudData(params) {
-  return apiCall('/wordcloud', params);
-}
-
-// 통계 데이터 조회
-export async function fetchStatistics(start, end) {
-  return apiCall('/statistics', { start, end });
-}
-
-// 샘플 데이터 조회
-export async function fetchSample(start, end, n = 5) {
-  return apiCall('/sample', { start, end, n });
-}
-
-// 캐시 관리 API 함수들
-export async function fetchCacheStatus() {
-  return apiCall('/cache/status');
-}
-
-export async function clearCache() {
-  const response = await fetch(`${API_BASE}/cache/clear`, {
-    method: 'DELETE'
-  });
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail || `캐시 삭제 실패: ${response.status}`);
-  }
-  return response.json();
-}
-
-export async function refreshCache(start, end) {
-  return apiCall('/cache/refresh', { start, end });
-}
-
-// API 상태 확인
+// API 상태 확인 (health)
 export async function checkApiHealth() {
   try {
-    console.log('🔍 API 상태 확인 중...');
-    const response = await fetch(API_BASE.replace('/api', '/health'));
-    console.log(`🏥 API 상태: ${response.status} ${response.statusText}`);
-    return response.ok;
-  } catch (error) {
-    console.error('❌ API 연결 실패:', error);
+    console.log("🔍 API 상태 확인 중...");
+    const res = await axios.get("http://localhost:8081/health");
+    console.log(`🏥 API 상태: ${res.status} ${res.statusText}`);
+    return res.status === 200;
+  } catch (err) {
+    console.error("❌ API 연결 실패:", err);
     return false;
   }
-} 
+}
+
+// (예시) POST/PUT 함수가 필요하면 아래처럼 추가
+// export function postSomeData(endpoint, data, params = {}) {
+//   return apiCall("post", endpoint, params, data);
+// }
+// export function putSomeData(endpoint, data, params = {}) {
+//   return apiCall("put", endpoint, params, data);
+// } 
