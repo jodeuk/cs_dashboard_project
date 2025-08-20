@@ -37,10 +37,7 @@ def limit_end_date(end_date_str: str) -> str:
     return end_date_str
 
 # ---- 2-1. Pydantic 모델 ----
-class CSATFileUpload(BaseModel):
-    filename: str
-    file_data: str  # Base64 encoded file data
-    file_type: str  # "xlsx" or "xls"
+# CSAT 업로드 관련 모델 제거됨
 
 # ---- 4. API 엔드포인트 ----
 
@@ -714,52 +711,7 @@ async def get_user_chat(userchat_id: str):
         raise HTTPException(status_code=500, detail=f"UserChat 조회 실패: {str(e)}")
 
 # 5. CSAT 관련 API
-@app.post("/api/upload-csat")
-async def upload_csat_file(file_upload: CSATFileUpload):
-    """CSAT Excel 파일 업로드"""
-    global _csat_data
-    
-    try:
-        # Base64 디코딩
-        file_bytes = base64.b64decode(file_upload.file_data)
-        
-        # Excel 파일 읽기
-        if file_upload.file_type == "xlsx":
-            df = pd.read_excel(io.BytesIO(file_bytes), engine='openpyxl')
-        else:
-            df = pd.read_excel(io.BytesIO(file_bytes), engine='xlrd')
-        
-        # 데이터 전처리
-        processed_data = []
-        for _, row in df.iterrows():
-            # 날짜 컬럼 처리
-            date_cols = [col for col in df.columns if '날짜' in col or 'date' in col.lower()]
-            for col in date_cols:
-                if pd.notna(row[col]):
-                    try:
-                        if isinstance(row[col], str):
-                            row[col] = pd.to_datetime(row[col])
-                        elif isinstance(row[col], (int, float)):
-                            row[col] = pd.to_datetime(row[col], unit='D', origin='1899-12-30')
-                    except:
-                        pass
-            
-            processed_data.append(row.to_dict())
-        
-        _csat_data = {
-            "filename": file_upload.filename,
-            "data": processed_data,
-            "uploaded_at": datetime.now().isoformat()
-        }
-        
-        return {
-            "message": "CSAT 파일이 성공적으로 업로드되었습니다.",
-            "filename": file_upload.filename,
-            "data_count": len(processed_data)
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"CSAT 파일 업로드 실패: {str(e)}")
+# CSAT 업로드 API 제거됨
 
 @app.get("/api/csat-analysis")
 async def csat_analysis(

@@ -9,7 +9,7 @@ const FILTER_FIELDS = [
   { key: "서비스유형_2차", label: "서비스유형 (2차)" }
 ];
 
-const FilterPanel = ({ options, values, setValues, onFilter }) => {
+const FilterPanel = ({ options, values, setValues }) => {
   const handleChange = (key, value) => {
     setValues(prev => ({ ...prev, [key]: value }));
   };
@@ -44,22 +44,7 @@ const FilterPanel = ({ options, values, setValues, onFilter }) => {
           </select>
         </div>
       ))}
-      <div style={{ display: "flex", alignItems: "end" }}>
-        <button
-          onClick={onFilter}
-          style={{
-            backgroundColor: "#007bff",
-            color: "white",
-            border: "none",
-            padding: "8px 16px",
-            borderRadius: "4px",
-            cursor: "pointer",
-            fontWeight: "bold"
-          }}
-        >
-          필터 적용
-        </button>
-      </div>
+
     </div>
   );
 };

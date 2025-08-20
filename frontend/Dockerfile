@@ -15,7 +15,7 @@ COPY . .
 
 # 환경변수 설정 (빌드 시점)
 ARG REACT_APP_API_BASE
-ENV REACT_APP_API_BASE=${REACT_APP_API_BASE:-http://localhost:8000/api}
+ENV REACT_APP_API_BASE=${REACT_APP_API_BASE:-http://61.107.201.48:8081}
 
 # 프로덕션 빌드
 RUN npm run build

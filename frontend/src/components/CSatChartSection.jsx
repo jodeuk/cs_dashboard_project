@@ -6,13 +6,16 @@ export default function CSatChartSection({ csatSummary, totalResponses }) {
     return <div style={{ padding: "12px", color: "#666" }}>CSat 데이터가 없습니다.</div>;
   }
 
-  // 응답자 / 미응답자 데이터 변환
-  const chartData = csatSummary.map(item => ({
-    항목: `${item.항목} (${item.평균점수}점)`,
-    응답자: item.응답자수,
-    미응답자: totalResponses - item.응답자수,
-    응답률: `${item["응답률(%)"]}%`
-  }));
+  // 응답자 / 미응답자 데이터 변환 + 응답률 계산
+  const chartData = csatSummary.map(item => {
+    const responseRate = totalResponses > 0 ? Math.round((item.응답자수 / totalResponses) * 100) : 0;
+    return {
+      항목: `${item.항목} (${item.평균점수}점)`,
+      응답자: item.응답자수,
+      미응답자: totalResponses - item.응답자수,
+      응답률: `${responseRate}%`
+    };
+  });
 
   return (
     <div style={{ backgroundColor: "white", padding: "20px", borderRadius: "8px", marginBottom: "20px" }}>

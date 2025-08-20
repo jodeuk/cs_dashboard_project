@@ -1,12 +1,13 @@
 import axios from "axios";
 
-// API 기본 URL (환경변수, 기본값)
-const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:8000/api";
+// BASE는 호스트까지만 (끝 슬래시 정리)
+const BASE = (process.env.REACT_APP_API_BASE || "").replace(/\/+$/, "");
+const ORIGIN_FOR_HEALTH = BASE.replace(/\/api$/, ""); // 헬스는 루트(/health)
 
 // axios 인스턴스 생성 (공통 옵션)
 const api = axios.create({
-  baseURL: API_BASE,
-  timeout: 60000, // 60초 타임아웃
+  baseURL: BASE,
+  timeout: 300000, // 5분 타임아웃 (데이터 새로고침용)
   headers: {
     "Content-Type": "application/json",
   },
@@ -45,16 +46,25 @@ api.interceptors.response.use(
 // 공통 호출 함수 (GET, POST, DELETE, PUT 지원)
 export async function apiCall(method, endpoint, params = {}, data = {}) {
   try {
-    const config = { method, url: endpoint };
+    // 헬스는 루트(/health). 그 외는 '/api'가 없으면 붙이고, 이미 있으면 그대로.
+    const apiEndpoint =
+      endpoint.startsWith('/health')
+        ? endpoint
+        : (endpoint.startsWith('/api') ? endpoint : `/api${endpoint}`);
+    const config = { method, url: apiEndpoint };
+    
     if (method === "get" || method === "delete") {
       config.params = params;
     } else {
       config.data = data;
       config.params = params; // 필요시 쿼리도 같이 보낼 수 있음
     }
+    
+    // 최종 URL 디버그 (axios가 조합한 baseURL + url)
+    const finalUrl = `${api.defaults.baseURL}${apiEndpoint}`;
+    console.log(`➡️ ${method.toUpperCase()} ${finalUrl}`, { params: config.params });
     const res = await api(config);
-    // 콘솔 로그 남기기
-    console.log(`✅ ${method.toUpperCase()} ${endpoint}`, res);
+    console.log(`✅ ${method.toUpperCase()} ${finalUrl}`, res);
     return res;
   } catch (err) {
     console.error(`❌ ${method.toUpperCase()} ${endpoint}`, err.message);
@@ -63,8 +73,8 @@ export async function apiCall(method, endpoint, params = {}, data = {}) {
 }
 
 // 기존 API들 함수화 (호환성을 위해 params 통일)
-export function fetchFilterOptions(start, end, forceRefresh = false) {
-  return apiCall("get", "/filter-options", { start, end, force_refresh: forceRefresh });
+export function fetchFilterOptions(start, end, refreshMode = "cache") {
+  return apiCall("get", "/filter-options", { start, end, refresh_mode: refreshMode });
 }
 export function fetchPeriodData(params) {
   return apiCall("get", "/period-data", params);
@@ -79,8 +89,16 @@ export function fetchCsatAnalysis(params) {
   return apiCall("get", "/csat-analysis", params);
 }
 
-export function fetchUserchats(start, end, forceRefresh = false) {
-  return apiCall("get", "/userchats", { start, end, force_refresh: forceRefresh });
+export async function fetchUserchats(start, end, refreshMode = "cache", filterParams = {}) {
+  const params = { start, end, refresh_mode: refreshMode, ...filterParams };
+  const resp = await apiCall("get", "/period-data", params);
+
+  // 🔒 방어: 배열이 아니면 빈 배열로
+  const rows = Array.isArray(resp) ? resp
+            : (resp && Array.isArray(resp.data) ? resp.data : []);
+
+  console.log("🔍 fetchUserchats resp type:", Array.isArray(resp) ? "array" : typeof resp, "length:", rows.length);
+  return rows;
 }
 
 export function fetchStatistics(start, end) {
@@ -107,13 +125,13 @@ export function refreshCache(start, end) {
 // API 상태 확인 (health)
 export async function checkApiHealth() {
   try {
-    console.log("🔍 API 상태 확인 중...");
-    const res = await axios.get("http://localhost:8081/health");
-    console.log(`🏥 API 상태: ${res.status} ${res.statusText}`);
-    return res.status === 200;
+    const res = await fetch(`${ORIGIN_FOR_HEALTH}/health`);
+    const ok = res.ok;
+    console.log("🏥 API 상태:", ok ? "healthy" : "unhealthy", { url: `${ORIGIN_FOR_HEALTH}/health` });
+    return { ok, url: `${ORIGIN_FOR_HEALTH}/health`, base: BASE, origin: ORIGIN_FOR_HEALTH };
   } catch (err) {
     console.error("❌ API 연결 실패:", err);
-    return false;
+    return { ok: false, url: `${ORIGIN_FOR_HEALTH}/health`, base: BASE, origin: ORIGIN_FOR_HEALTH };
   }
 }
 

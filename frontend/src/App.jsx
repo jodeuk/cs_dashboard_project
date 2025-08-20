@@ -3,10 +3,51 @@ import { fetchUserchats, fetchFilterOptions, checkApiHealth, checkCacheForPeriod
 import FilterPanel from "./components/FilterPanel";
 import ChartSection from "./components/ChartSection";
 import MultiLineChartSection from "./components/MultiLineChartSection";
-import CsatUploadSection from "./components/CsatUploadSection";
+
 import CacheStatusSection from "./components/CacheStatusSection";
 import CSatChartSection from "./components/CSatChartSection";
 import CSatTypeChartSection from "./components/CSatTypeChartSection";
+
+// === KST 유틸 (파일 상단 util 섹션에 추가) ===
+const KST_OFFSET = "+09:00";
+const toFiniteNumber = (v, def = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+};
+const asString = (v, def = "") => (v == null ? def : String(v));
+
+// === robust timestamp parser: number/ms, ' '→'T' ===
+function parseTsKST(ts) {
+  if (ts == null) return null;
+  // number(ms) or numeric string
+  if (typeof ts === "number" || (/^\d+$/.test(String(ts)) && String(ts).length >= 12)) {
+    const n = Number(ts);
+    return Number.isFinite(n) ? new Date(n) : null;
+  }
+  if (typeof ts !== "string") return null;
+  let s = ts.trim();
+  // 'YYYY-MM-DD HH:MM:SS(.ms)?' → 'YYYY-MM-DDTHH:MM:SS(.ms)?'
+  if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(s)) {
+    s = s.replace(/\s+/, "T");
+  }
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+function buildRangeKST(startStr, endStr) {
+  const startMs = new Date(`${startStr}T00:00:00.000${KST_OFFSET}`).getTime();
+  const endMs   = new Date(`${endStr}T23:59:59.999${KST_OFFSET}`).getTime();
+  return { startMs, endMs };
+}
+
+// 차트 표준 데이터키로 정규화: {label, value}
+function normalizeChartRows(rows, { labelKeyCandidates = ["label", "x축", "dateLabel"], valueKeyCandidates = ["value", "문의량", "count"] } = {}) {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((r) => {
+    const label = asString(labelKeyCandidates.find(k => r?.[k] != null) ? r[labelKeyCandidates.find(k => r?.[k] != null)] : "", "");
+    const value = toFiniteNumber(valueKeyCandidates.find(k => r?.[k] != null) ? r[valueKeyCandidates.find(k => r?.[k] != null)] : 0);
+    return { label, value };
+  }).filter(d => d.label !== "" && Number.isFinite(d.value));
+}
 
 // 날짜 포맷
 const formatDate = (date) => date.toISOString().split("T")[0];
@@ -21,7 +62,13 @@ function App() {
   // 상태
   const [userchats, setUserchats] = useState([]); // "상세 row" 전체
   const [filterOptions, setFilterOptions] = useState({});
-  const [filterVals, setFilterVals] = useState({});
+  const [filterVals, setFilterVals] = useState({
+    고객유형: "전체",
+    문의유형: "전체", 
+    서비스유형: "전체",
+    문의유형_2차: "전체",
+    서비스유형_2차: "전체"
+  });
   const [dateGroup, setDateGroup] = useState("월간");
   const [start, setStart] = useState(oneMonthAgoStr);
   const [end, setEnd] = useState(todayStr);
@@ -30,6 +77,7 @@ function App() {
   const [apiConnected, setApiConnected] = useState(null);
   const [csatData, setCsatData] = useState(null);
   const [csatQuestionFilter, setCsatQuestionFilter] = useState("A-1"); // CSAT 질문 필터
+  const [activeTab, setActiveTab] = useState("CS"); // "CS", "CSAT", "Cache"
   // 도넛 차트 툴팁/호버 상태
   const [tooltip, setTooltip] = useState({ visible: false, x: 0, y: 0, title: "", count: 0, percent: "" });
   const [hoverIndex, setHoverIndex] = useState(null);
@@ -41,8 +89,8 @@ function App() {
       .catch(() => setApiConnected(false));
   }, []);
 
-  // --- 캐시데이터 한번만 전체 불러오기 ---
-  const loadCacheData = useCallback(async (forceRefresh = false) => {
+  // --- 캐시데이터 로드 ---
+  const loadCacheData = useCallback(async (refreshMode = "cache") => {
     setLoading(true);
     try {
       // 현재 날짜까지 자동으로 갱신
@@ -57,21 +105,49 @@ function App() {
       
       console.log("📅 데이터 로드 범위:", startDate, "~", endDate);
       
-      // 강제 새로고침이면 캐시 무시하고 새로 가져오기
-      if (forceRefresh) {
-        console.log("🔄 강제 새로고침 모드 - 캐시 무시하고 최신 데이터 가져오기");
+      // refresh_mode에 따른 로그
+      if (refreshMode === "refresh") {
+        console.log("🔄 전체 갱신 모드 - 기존 캐시 완전 삭제 후 새로 수집");
+      } else if (refreshMode === "update") {
+        console.log("📥 최신화 모드 - 기존 캐시 유지 + 누락된 기간만 API 호출");
+      } else {
+        console.log("💾 캐시 모드 - 기존 캐시만 사용");
       }
       
-      // 전체 기간 캐시 row fetch (날짜 범위는 나중에 필터링)
-      const rows = await fetchUserchats(startDate, endDate, forceRefresh);
+      // 초기 로딩: 최근 1개월만
+      const initialEndDate = todayStr;
+      const initialStartDate = oneMonthAgoStr;
+      
+      const rows = await fetchUserchats(initialStartDate, initialEndDate, refreshMode);
       setUserchats(rows);
-      // 필터 옵션도 fetch
-      const opts = await fetchFilterOptions(startDate, endDate, forceRefresh);
+      
+      // 필터 옵션은 전체 범위 (4월 1일~현재)
+      const opts = await fetchFilterOptions(startDate, endDate, refreshMode);
       setFilterOptions(opts);
       
-      if (forceRefresh) {
-        setError("✅ 데이터가 최신으로 갱신되었습니다.");
+      if (refreshMode === "refresh") {
+        setError("✅ 데이터가 완전히 갱신되었습니다.");
         setTimeout(() => setError(null), 3000); // 3초 후 메시지 제거
+      } else if (refreshMode === "update") {
+        setError("✅ 데이터가 최신화되었습니다.");
+        setTimeout(() => setError(null), 3000); // 3초 후 메시지 제거
+        
+        // CSAT 데이터도 최신화
+        console.log("📥 CSAT 데이터 최신화 시작...");
+        try {
+          // 백엔드에서 자동으로 캐시 범위 계산하여 CSAT 최신화
+          const csatRes = await fetch(`${process.env.REACT_APP_API_BASE}/api/cache/refresh?force=true&include_csat=true`);
+          if (csatRes.ok) {
+            const csatResult = await csatRes.json();
+            console.log("✅ CSAT 최신화 완료:", csatResult);
+            // CSAT 데이터 다시 로드
+            loadCsatAnalysis();
+          } else {
+            console.error("❌ CSAT 최신화 API 응답 오류:", csatRes.status);
+          }
+        } catch (err) {
+          console.error("❌ CSAT 최신화 실패:", err);
+        }
       }
     } catch (err) {
       setError("캐시 데이터 로드 실패: " + err.message);
@@ -121,24 +197,16 @@ function App() {
   const loadCsatAnalysis = useCallback(async () => {
     console.log("🔍 CSAT 분석 시작...");
     try {
-      // 캐시에서 CSAT 데이터 불러오기
-      const csatRes = await fetch(`${process.env.REACT_APP_API_BASE}/cache/status`);
-      const cacheStatus = await csatRes.json();
-      console.log("📦 캐시 상태:", cacheStatus);
+      // CSAT 분석 API 직접 호출 (캐시 상태와 관계없이)
+      const params = new URLSearchParams({ start, end });
+      const res = await fetch(`${process.env.REACT_APP_API_BASE}/api/csat-analysis?${params.toString()}`);
       
-      // csat_raw.pkl이 있는지 확인
-      const hasCsatCache = cacheStatus.files?.some(file => file.filename.includes('csat_raw'));
-      console.log("📊 CSAT 캐시 존재:", hasCsatCache);
-      
-      if (hasCsatCache) {
-        // 캐시된 CSAT 데이터와 userchats 병합 분석
-        const params = new URLSearchParams({ start, end });
-        const res = await fetch(`${process.env.REACT_APP_API_BASE}/csat-analysis?${params.toString()}`);
+      if (res.ok) {
         const result = await res.json();
         console.log("✅ CSAT 분석 결과:", result);
         setCsatData(result);
       } else {
-        console.log("⚠️ CSAT 캐시 데이터가 없습니다. Excel 파일을 업로드해주세요.");
+        console.log("⚠️ CSAT 분석 API 호출 실패:", res.status);
         setCsatData(null);
       }
     } catch (e) {
@@ -155,17 +223,54 @@ function App() {
 
   // --- 실제로 사용할 "현재 필터+기간"의 row ---
   const filteredRows = useMemo(() => {
+    // 데이터/날짜 준비되기 전엔 계산 스킵
+    if (loading || !Array.isArray(userchats) || userchats.length === 0 || !start || !end) {
+      console.log("⏳ skip filteredRows compute (loading or not ready)", { 
+        loading, 
+        userchatsLen: userchats?.length, 
+        start, 
+        end 
+      });
+      return [];
+    }
+    
     console.log("🔍 filteredRows 계산 시작:", { start, end, userchatsLength: userchats.length });
     
     // 디버깅용 전역 변수 노출 (임시)
     window.debugData = { userchats, start, end, filterVals };
     
-    const filtered = userchats.filter((item) => {
-      const d = new Date(item.firstAskedAt);
-      if (isNaN(d)) return false;
-      if (d < new Date(start) || d > new Date(end)) return false;
+    // 사용자가 더 이전 기간 선택 시: 필요할 때만 추가 로드
+    const initialStartDate = oneMonthAgoStr;
+    if (start < initialStartDate && !userchats.some(r => {
+      const dt = parseTsKST(r?.firstAskedAt);
+      return dt && dt.getTime() < new Date(`${initialStartDate}T00:00:00+09:00`).getTime();
+    })) {
+      console.log("📥 이전 기간 데이터 필요 - 추가 로드 시작");
+      // 비동기로 추가 데이터 로드 (UI 블로킹 방지)
+      (async () => {
+        try {
+          const additionalRows = await fetchUserchats("2025-04-01", initialStartDate, "cache");
+          if (additionalRows && additionalRows.length > 0) {
+            console.log("✅ 추가 데이터 로드 완료:", additionalRows.length, "건");
+            setUserchats(prev => [...additionalRows, ...prev]);
+          }
+        } catch (err) {
+          console.error("❌ 추가 데이터 로드 실패:", err);
+        }
+      })();
+    }
+    
+    const { startMs, endMs } = buildRangeKST(start, end);
+    const filteredRows = (Array.isArray(userchats) ? userchats : []).filter(r => {
+      const dt = parseTsKST(r?.firstAskedAt);
+      const t = dt ? dt.getTime() : NaN;
+      return Number.isFinite(t) && t >= startMs && t <= endMs;
+    });
+    
+    // 추가 필터링
+    const filtered = filteredRows.filter((item) => {
 
-    if (filterVals.고객유형 && filterVals.고객유형 !== "전체") {
+      if (filterVals.고객유형 && filterVals.고객유형 !== "전체") {
         if (
           item.고객유형 !== filterVals.고객유형 &&
           item.고객유형_1차 !== filterVals.고객유형 &&
@@ -175,8 +280,8 @@ function App() {
       }
       if (filterVals.고객유형_2차 && filterVals.고객유형_2차 !== "전체") {
         if (item.고객유형_2차 !== filterVals.고객유형_2차) return false;
-    }
-    if (filterVals.문의유형 && filterVals.문의유형 !== "전체") {
+      }
+      if (filterVals.문의유형 && filterVals.문의유형 !== "전체") {
         if (
           item.문의유형 !== filterVals.문의유형 &&
           item.문의유형_1차 !== filterVals.문의유형 &&
@@ -186,8 +291,8 @@ function App() {
       }
       if (filterVals.문의유형_2차 && filterVals.문의유형_2차 !== "전체") {
         if (item.문의유형_2차 !== filterVals.문의유형_2차) return false;
-    }
-    if (filterVals.서비스유형 && filterVals.서비스유형 !== "전체") {
+      }
+      if (filterVals.서비스유형 && filterVals.서비스유형 !== "전체") {
         if (
           item.서비스유형 !== filterVals.서비스유형 &&
           item.서비스유형_1차 !== filterVals.서비스유형 &&
@@ -201,36 +306,92 @@ function App() {
       return true;
     });
     
-    console.log("🔍 filteredRows 결과:", { 
-      filteredLength: filtered.length, 
+    console.log("🔍 filteredRows 결과:", {
+      filteredLength: filtered.length,
       sampleData: filtered.slice(0, 2),
       dateRange: { start, end }
     });
     
     return filtered;
-  }, [userchats, start, end, filterVals]);
+  }, [userchats, start, end, filterVals.고객유형, filterVals.문의유형, filterVals.서비스유형, filterVals.문의유형_2차, filterVals.서비스유형_2차]);
+
+  // 유형 필터 변경 시 자동 적용
+  useEffect(() => {
+    if (Object.keys(filterVals).length > 0) {
+      console.log("🔍 유형 필터 변경 감지:", filterVals);
+      handleFilterChange();
+    }
+  }, [filterVals]);
+
+  // 유형 필터 변경 핸들러
+  const handleFilterChange = useCallback(async () => {
+    try {
+      setLoading(true);
+      
+      // 백엔드에서 유형 필터링된 데이터 가져오기 (캐시에서 필터링)
+      const filteredRows = await fetchUserchats(start, end, "cache", {
+        고객유형: filterVals.고객유형 || "전체",
+        문의유형: filterVals.문의유형 || "전체",
+        서비스유형: filterVals.서비스유형 || "전체",
+        문의유형_2차: filterVals.문의유형_2차 || "전체",
+        서비스유형_2차: filterVals.서비스유형_2차 || "전체"
+      });
+      
+      setUserchats(filteredRows);
+      
+      console.log("✅ 유형 필터 자동 적용 완료:", { 
+        filterVals, 
+        filteredCount: filteredRows.length 
+      });
+      
+    } catch (err) {
+      console.error("❌ 유형 필터 적용 실패:", err);
+      setError("유형 필터 적용 실패: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [start, end, filterVals.고객유형, filterVals.문의유형, filterVals.서비스유형, filterVals.문의유형_2차, filterVals.서비스유형_2차]);
 
   // --- 차트 집계: 월간 or 주간 ---
   const chartData = useMemo(() => {
+    // 로딩 중이거나 데이터 준비 안 됐으면 스킵
+    if (!Array.isArray(filteredRows) || filteredRows.length === 0) {
+      console.warn("📉 chart/inquiry guard: filteredRows empty → fallback");
+      return [];
+    }
+    
     console.log("🔍 chartData 계산 시작:", { filteredRowsLength: filteredRows.length, dateGroup });
-    if (!filteredRows.length) return [];
     if (dateGroup === "월간") {
       // 월별 집계
       const map = {};
       filteredRows.forEach((item) => {
-        const d = new Date(item.firstAskedAt);
+        const d = parseTsKST(item.firstAskedAt);
         const key = `${d.getFullYear()}-${d.getMonth() + 1}`;
         if (!map[key]) map[key] = { x축: `${d.getMonth() + 1}월`, 문의량: 0 };
         map[key].문의량 += 1;
       });
-      const result = Object.values(map).sort((a, b) => parseInt(a.x축) - parseInt(b.x축));
-      console.log("🔍 chartData 월간 결과:", result);
-      return result;
+      const monthlyRaw = Object.values(map).sort((a, b) => parseInt(a.x축) - parseInt(b.x축));
+      console.log("🔍 chartData 월간 결과:", monthlyRaw);
+      
+      // 표준키 {label, value}로 정규화
+      const chartData = normalizeChartRows(monthlyRaw, {
+        labelKeyCandidates: ["x축", "label", "dateLabel"],
+        valueKeyCandidates: ["문의량", "value", "count"]
+      });
+      
+      // 빈 배열 가드 (NaN 방지)
+      if (!chartData.length) {
+        console.warn("📉 chart guard: empty chartData");
+        return [];
+      }
+      
+      console.log("🔍 chartData 표준화 결과:", chartData);
+      return chartData;
     } else {
       // 주별 집계
       const map = {};
       filteredRows.forEach((item) => {
-        const d = new Date(item.firstAskedAt);
+        const d = parseTsKST(item.firstAskedAt);
         const weekStart = new Date(d);
         weekStart.setDate(d.getDate() - d.getDay()); // 주의 시작 (일요일)
         const weekKey = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, '0')}-${String(weekStart.getDate()).padStart(2, '0')}`;
@@ -260,9 +421,9 @@ function App() {
     if (!filteredRows.length) return [];
     // 월별 평균 구하기
     const map = {};
-    filteredRows.forEach((item) => {
-      const d = new Date(item.firstAskedAt);
-      const month = `${d.getFullYear()}-${d.getMonth() + 1}`;
+          filteredRows.forEach((item) => {
+        const d = parseTsKST(item.firstAskedAt);
+        const month = `${d.getFullYear()}-${d.getMonth() + 1}`;
       if (!map[month])
         map[month] = {
           x축: `${d.getMonth() + 1}월`,
@@ -297,12 +458,16 @@ function App() {
 
   // --- 문의유형별 차트 데이터 ---
   const inquiryTypeData = useMemo(() => {
+    // 로딩 중이거나 데이터 준비 안 됐으면 스킵
+    if (loading || !Array.isArray(filteredRows) || filteredRows.length === 0) {
+      console.log("⏳ skip inquiryTypeData compute", { loading, filteredRowsLength: filteredRows?.length });
+    return [];
+    }
+    
     console.log("🔍 inquiryTypeData 계산 시작:", { 
       filteredRowsLength: filteredRows.length, 
       filterVals문의유형: filterVals.문의유형 
     });
-    
-    if (!filteredRows.length) return [];
     
     if (filterVals.문의유형 === "전체") {
       // 문의유형별 집계 (1차 값만 사용)
@@ -318,13 +483,22 @@ function App() {
           counts[type] = (counts[type] || 0) + 1;
         }
       });
-      const result = Object.entries(counts)
-        .map(([type, count]) => ({ 문의유형: type, 문의량: count }))
+      const inquiryRaw = Object.entries(counts)
+        .map(([type, count]) => ({ 문의유형: type, 문의량: Number(count) || 0 }))
+        .filter(item => !isNaN(item.문의량) && item.문의량 > 0)
         .sort((a, b) => b.문의량 - a.문의량);
       
-      console.log("🔍 inquiryTypeData 전체 결과:", result);
-      return result;
-    } else {
+      console.log("🔍 inquiryTypeData 전체 결과:", inquiryRaw);
+      
+      // 표준키 {label, value}로 정규화
+      const inquiryData = normalizeChartRows(inquiryRaw, {
+        labelKeyCandidates: ["label", "라벨", "name", "유형", "문의유형"],
+        valueKeyCandidates: ["value", "건수", "count", "문의량"]
+      });
+      
+      console.log("🔍 inquiryTypeData 표준화 결과:", inquiryData);
+      return inquiryData;
+      } else {
       // 선택된 문의유형의 2차 분류별 집계
       const counts = {};
       filteredRows.forEach(item => {
@@ -340,18 +514,31 @@ function App() {
           }
         }
       });
-      const result = Object.entries(counts)
-        .map(([type, count]) => ({ 문의유형_2차: type, 문의량: count }))
+      const inquiryRaw = Object.entries(counts)
+        .map(([type, count]) => ({ 문의유형_2차: type, 문의량: Number(count) || 0 }))
+        .filter(item => !isNaN(item.문의량) && item.문의량 > 0)
         .sort((a, b) => b.문의량 - a.문의량);
       
-      console.log("🔍 inquiryTypeData 2차 결과:", result);
-      return result;
+      console.log("🔍 inquiryTypeData 2차 결과:", inquiryRaw);
+      
+      // 표준키 {label, value}로 정규화
+      const inquiryData = normalizeChartRows(inquiryRaw, {
+        labelKeyCandidates: ["label", "라벨", "name", "유형", "문의유형_2차"],
+        valueKeyCandidates: ["value", "건수", "count", "문의량"]
+      });
+      
+      console.log("🔍 inquiryTypeData 표준화 결과:", inquiryData);
+      return inquiryData;
     }
   }, [filteredRows, filterVals.문의유형]);
 
   // --- 고객유형별 도넛 차트 데이터 ---
   const customerTypeData = useMemo(() => {
-    if (!filteredRows.length) return [];
+    // 로딩 중이거나 데이터 준비 안 됐으면 스킵
+    if (loading || !Array.isArray(filteredRows) || filteredRows.length === 0) {
+      console.log("⏳ skip customerTypeData compute", { loading, filteredRowsLength: filteredRows?.length });
+      return [];
+    }
     
     const counts = {};
     filteredRows.forEach(item => {
@@ -514,22 +701,78 @@ function App() {
           <h1 style={{ textAlign: "center", color: "#333", margin: 0 }}>
           📊 CS 대시보드
         </h1>
+          <div style={{ display: "flex", gap: "12px" }}>
+            <button
+              onClick={() => loadCacheData("update")}
+              disabled={loading}
+              style={{
+                padding: "10px 20px",
+                backgroundColor: "#28a745",
+                color: "white",
+                border: "none",
+                borderRadius: "6px",
+                cursor: loading ? "not-allowed" : "pointer",
+                fontSize: "14px",
+                fontWeight: "bold",
+                boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
+              }}
+            >
+              {loading ? "🔄 최신화 중..." : "🔄 최신화"}
+            </button>
+
+          </div>
+        </div>
+
+        {/* 탭 네비게이션 */}
+        <div style={{ 
+          display: "flex", 
+          borderBottom: "1px solid #dee2e6",
+          backgroundColor: "white",
+          marginBottom: "20px",
+          borderRadius: "8px 8px 0 0"
+        }}>
           <button
-            onClick={() => loadCacheData(true)}
-            disabled={loading}
+            onClick={() => setActiveTab("CS")}
             style={{
-              padding: "10px 20px",
-              backgroundColor: "#007bff",
-              color: "white",
+              padding: "12px 24px",
               border: "none",
-              borderRadius: "6px",
-              cursor: loading ? "not-allowed" : "pointer",
-              fontSize: "14px",
-              fontWeight: "bold",
-              boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
+              backgroundColor: activeTab === "CS" ? "#007bff" : "transparent",
+              color: activeTab === "CS" ? "white" : "#495057",
+              cursor: "pointer",
+              borderBottom: activeTab === "CS" ? "2px solid #007bff" : "none",
+              fontWeight: activeTab === "CS" ? "600" : "400",
+              borderRadius: "8px 8px 0 0"
             }}
           >
-            {loading ? "🔄 갱신 중..." : "🔄 데이터 갱신"}
+            CS
+          </button>
+          <button
+            onClick={() => setActiveTab("CSAT")}
+            style={{
+              padding: "12px 24px",
+              border: "none",
+              backgroundColor: activeTab === "CSAT" ? "#007bff" : "transparent",
+              color: activeTab === "CSAT" ? "white" : "#495057",
+              cursor: "pointer",
+              borderBottom: activeTab === "CSAT" ? "2px solid #007bff" : "none",
+              fontWeight: activeTab === "CSAT" ? "600" : "400"
+            }}
+          >
+            CSAT
+          </button>
+          <button
+            onClick={() => setActiveTab("Cache")}
+            style={{
+              padding: "12px 24px",
+              border: "none",
+              backgroundColor: activeTab === "Cache" ? "#007bff" : "transparent",
+              color: activeTab === "Cache" ? "white" : "#495057",
+              cursor: "pointer",
+              borderBottom: activeTab === "Cache" ? "2px solid #007bff" : "none",
+              fontWeight: activeTab === "Cache" ? "600" : "400"
+            }}
+          >
+            Cache
           </button>
         </div>
 
@@ -557,7 +800,8 @@ function App() {
           </div>
         )}
 
-        {/* 기간 필터 */}
+        {/* 기간 필터 - CS와 CSAT 탭에서만 표시 */}
+        {(activeTab === "CS" || activeTab === "CSAT") && (
         <div style={{ marginBottom: 16 }}>
           <label style={{ marginRight: "8px", fontWeight: "bold" }}>기간:</label>
           <input
@@ -584,8 +828,21 @@ function App() {
             style={{ margin: "0 8px", padding: "4px 8px", borderRadius: "4px", border: "1px solid #ddd" }}
           />
         </div>
+        )}
 
-        {/* 통계 */}
+
+
+
+
+
+
+
+
+
+        {/* CS 탭 */}
+        {activeTab === "CS" && (
+          <>
+            {/* 총문의량 통계 */}
           <div style={{
             backgroundColor: "#f8f9fa",
             padding: "16px",
@@ -602,13 +859,14 @@ function App() {
             </div>
           </div>
 
+            {/* 유형 필터링 */}
         <FilterPanel
           options={filterOptions}
           values={filterVals}
           setValues={setFilterVals}
-          onFilter={() => {}}
         />
 
+            {/* CS 문의량 차트 */}
         <ChartSection
           data={chartData}
           label="CS 문의량"
@@ -620,7 +878,7 @@ function App() {
         />
 
         {/* 평균 응답시간 차트 */}
-        {avgTimeChartData.length > 0 && (
+            {avgTimeChartData.length > 0 && (
           <div style={{
             backgroundColor: "white",
             padding: "20px",
@@ -628,247 +886,235 @@ function App() {
             marginBottom: "20px",
             boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
           }}>
-            <h3 style={{ marginBottom: "16px", color: "#333" }}>평균 응답/해결 시간</h3>
+                <h3 style={{ marginBottom: "16px", color: "#333" }}>평균 응답/해결 시간</h3>
             <div style={{ fontSize: "14px", color: "#666", marginBottom: "16px" }}>y축 단위: 분(min)</div>
             
             <MultiLineChartSection
-              data={avgTimeChartData}
+                  data={avgTimeChartData}
               lines={[
-                { key: "operationWaitingTime", color: "#007bff", label: "첫응답시간" },
-                { key: "operationAvgReplyTime", color: "#28a745", label: "평균응답시간" },
-                { key: "operationTotalReplyTime", color: "#ffc107", label: "총응답시간" },
-                { key: "operationResolutionTime", color: "#dc3545", label: "해결시간" }
+                    { key: "operationWaitingTime", color: "#007bff", label: "첫응답시간" },
+                    { key: "operationAvgReplyTime", color: "#28a745", label: "평균응답시간" },
+                    { key: "operationTotalReplyTime", color: "#ffc107", label: "총응답시간" },
+                    { key: "operationResolutionTime", color: "#dc3545", label: "해결시간" }
               ]}
               label=""
               xLabel="x축"
               loading={loading}
-              dateGroup={"월간"}
+                  dateGroup={"월간"}
+                />
+              </div>
+            )}
+
+            {/* 문의유형별 차트 */}
+            {inquiryTypeData.length > 0 && (
+              <div style={{
+                backgroundColor: "white",
+                padding: "20px",
+                borderRadius: "8px",
+                marginBottom: "20px",
+                boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
+              }}>
+                <h3 style={{ marginBottom: "16px", color: "#333" }}>
+                  문의유형별 분포
+                  {filterVals.문의유형 && filterVals.문의유형 !== "전체" && ` (${filterVals.문의유형} > 2차분류)`}
+                </h3>
+                <ChartSection
+                  data={inquiryTypeData}
+                  label=""
+                  xLabel={!filterVals.문의유형 || filterVals.문의유형 === "전체" ? "문의유형" : "문의유형_2차"}
+                  yLabel="문의량"
+                  loading={loading}
+                  chartType="horizontalBar"
+                  height={400}
+                  width={800}
             />
           </div>
         )}
 
-        {/* 문의유형별 차트 */}
-        {inquiryTypeData.length > 0 && (
-          <div style={{
-            backgroundColor: "white",
-            padding: "20px",
-            borderRadius: "8px",
-            marginBottom: "20px",
-            boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
-          }}>
-            <h3 style={{ marginBottom: "16px", color: "#333" }}>
-              {filterVals.문의유형 === "전체" ? "문의유형별 CS 문의량" : `"${filterVals.문의유형}"의 CS 문의량`}
-            </h3>
-
-            <div style={{ height: "300px", overflowY: "auto" }}>
-              {inquiryTypeData.map((item, index) => {
-                const maxValue = Math.max(...inquiryTypeData.map(d => d.문의량));
-                const percentage = (item.문의량 / maxValue) * 100;
-                return (
-                  <div key={index} style={{
-                    marginBottom: "12px"
-                  }}>
+            {/* 고객유형별 도넛 차트 */}
+            {customerTypeData.length > 0 && (
+              <div style={{
+                backgroundColor: "white",
+                padding: "20px",
+                borderRadius: "8px",
+                marginBottom: "20px",
+                boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
+              }}>
+                <h3 style={{ marginBottom: "16px", color: "#333" }}>고객유형별 분포</h3>
+                <div style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "300px" }}>
+                  <div style={{ position: "relative", width: "300px", height: "300px" }}>
+                    <svg width="300" height="300" viewBox="0 0 300 300">
+                      <circle
+                        cx="150"
+                        cy="150"
+                        r="120"
+                        fill="none"
+                        stroke="#e0e0e0"
+                        strokeWidth="40"
+                      />
+                      {customerTypeData.map((item, index) => {
+                        const startAngle = customerTypeData
+                          .slice(0, index)
+                          .reduce((sum, d) => sum + (d.문의량 / customerTypeData.reduce((s, x) => s + x.문의량, 0)) * 2 * Math.PI, 0);
+                        const endAngle = startAngle + (item.문의량 / customerTypeData.reduce((s, x) => s + x.문의량, 0)) * 2 * Math.PI;
+                        const x1 = 150 + 100 * Math.cos(startAngle);
+                        const y1 = 150 + 100 * Math.sin(startAngle);
+                        const x2 = 150 + 100 * Math.cos(endAngle);
+                        const y2 = 150 + 100 * Math.sin(endAngle);
+                        const largeArcFlag = endAngle - startAngle <= Math.PI ? "0" : "1";
+                        const colors = ["#007bff", "#28a745", "#ffc107", "#dc3545", "#6f42c1", "#fd7e14"];
+                        const color = colors[index % colors.length];
+                        
+                        return (
+                          <g key={index}>
+                            <path
+                              d={`M ${x1} ${y1} A 100 100 0 ${largeArcFlag} 1 ${x2} ${y2}`}
+                              fill="none"
+                              stroke={color}
+                              strokeWidth="40"
+                              onMouseEnter={(e) => {
+                                const rect = e.target.getBoundingClientRect();
+                                setTooltip({
+                                  visible: true,
+                                  x: rect.left + rect.width / 2,
+                                  y: rect.top,
+                                  title: item.고객유형,
+                                  count: item.문의량,
+                                  percent: item.퍼센트 + "%"
+                                });
+                                setHoverIndex(index);
+                              }}
+                              onMouseLeave={() => {
+                                setTooltip({ visible: false, x: 0, y: 0, title: "", count: 0, percent: "" });
+                                setHoverIndex(null);
+                              }}
+                              style={{ cursor: "pointer" }}
+                            />
+                          </g>
+                        );
+                      })}
+                    </svg>
                     <div style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      marginBottom: "4px"
+                      position: "absolute",
+                      top: "50%",
+                      left: "50%",
+                      transform: "translate(-50%, -50%)",
+                      textAlign: "center"
                     }}>
-                      <span style={{ fontSize: "14px", fontWeight: "500" }}>
-                        {filterVals.문의유형 === "전체" ? item.문의유형 : item.문의유형_2차}
-                      </span>
-                      <span style={{ fontSize: "14px", fontWeight: "bold", color: "#007bff" }}>
-                        {item.문의량.toLocaleString()}
-                      </span>
-                    </div>
-                    <div style={{
-                      width: "100%",
-                      height: "20px",
-                      backgroundColor: "#e9ecef",
-                      borderRadius: "10px",
-                      overflow: "hidden"
-                    }}>
-                      <div style={{
-                        width: `${percentage}%`,
-                        height: "100%",
-                        backgroundColor: "#007bff",
-                        borderRadius: "10px",
-                        transition: "width 0.3s ease"
-                      }}></div>
+                      <div style={{ fontSize: "24px", fontWeight: "bold", color: "#333" }}>
+                        {customerTypeData.reduce((sum, item) => sum + item.문의량, 0).toLocaleString()}
+                      </div>
+                      <div style={{ fontSize: "14px", color: "#666" }}>총 문의</div>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-
-        {/* 고객유형별 도넛 차트 */}
-        {customerTypeData.length > 0 && (
-          <div style={{
-            backgroundColor: "white",
-            padding: "20px",
-            borderRadius: "8px",
-            marginBottom: "20px",
-            boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
-          }}>
-            <h3 style={{ marginBottom: "16px", color: "#333" }}>고객유형별 CS 문의량</h3>
-
-            <div style={{ display: "flex", justifyContent: "center" }}>
-              <div style={{ position: "relative", width: "300px", height: "300px" }}>
-                <svg width="300" height="300" viewBox="0 0 300 300">
-                  <circle
-                    cx="150"
-                    cy="150"
-                    r="120"
-                    fill="none"
-                    stroke="#e9ecef"
-                    strokeWidth="40"
-                  />
-                  {(() => {
+                </div>
+                <div style={{ marginTop: "20px", display: "flex", flexWrap: "wrap", gap: "8px", justifyContent: "center" }}>
+                  {customerTypeData.map((item, index) => {
                     const colors = ["#007bff", "#28a745", "#ffc107", "#dc3545", "#6f42c1", "#fd7e14"];
-                    let currentAngle = -90;
-                    return customerTypeData.map((item, index) => {
-                      const percentage = parseFloat(item.퍼센트);
-                      const angle = (percentage / 100) * 360;
-                      const color = colors[index % colors.length];
-                      
-                      const x1 = 150 + 100 * Math.cos(currentAngle * Math.PI / 180);
-                      const y1 = 150 + 100 * Math.sin(currentAngle * Math.PI / 180);
-                      const x2 = 150 + 100 * Math.cos((currentAngle + angle) * Math.PI / 180);
-                      const y2 = 150 + 100 * Math.sin((currentAngle + angle) * Math.PI / 180);
-                      
-                      const largeArcFlag = angle > 180 ? 1 : 0;
-                      const pathData = `M ${x1} ${y1} A 100 100 0 ${largeArcFlag} 1 ${x2} ${y2}`;
-                      
-                      currentAngle += angle;
-                      
-                      return (
-                        <g key={index}>
-                          <path
-                            d={pathData}
-                            fill="none"
-                            stroke={color}
-                            strokeWidth={hoverIndex === index ? 45 : 40}
-                            opacity={hoverIndex === index ? 0.8 : 1}
-                            strokeLinecap="round"
-                            style={{ cursor: "pointer" }}
-                            onMouseEnter={(e) => {
-                              setHoverIndex(index);
-                              setTooltip({
-                                visible: true,
-                                x: e.clientX,
-                                y: e.clientY,
-                                title: item.고객유형,
-                                count: item.문의량,
-                                percent: item.퍼센트
-                              });
-                            }}
-                            onMouseMove={(e) => {
-                              setTooltip((prev) => ({ ...prev, x: e.clientX, y: e.clientY }));
-                            }}
-                            onMouseLeave={() => {
-                              setHoverIndex(null);
-                              setTooltip((prev) => ({ ...prev, visible: false }));
-                            }}
-                          />
-                        </g>
-                      );
-                    });
-                  })()}
-                </svg>
-                <div style={{
-                  position: "absolute",
-                  top: "50%",
-                  left: "50%",
-                  transform: "translate(-50%, -50%)",
-                  textAlign: "center"
-                }}>
-                  <div style={{ fontSize: "24px", fontWeight: "bold", color: "#333" }}>
-                    {customerTypeData.reduce((sum, item) => sum + item.문의량, 0).toLocaleString()}
-                  </div>
-                  <div style={{ fontSize: "14px", color: "#666" }}>총 문의</div>
-                </div>
-              </div>
-            </div>
-            <div style={{ marginTop: "20px", display: "flex", flexWrap: "wrap", gap: "8px", justifyContent: "center" }}>
-              {customerTypeData.map((item, index) => {
-                const colors = ["#007bff", "#28a745", "#ffc107", "#dc3545", "#6f42c1", "#fd7e14"];
-                return (
-                  <div key={index} style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    padding: "4px 8px",
-                    backgroundColor: "#f8f9fa",
-                    borderRadius: "4px",
-                    fontSize: "12px",
-                    cursor: "pointer"
-                  }}
-                  title={`${item.고객유형}: ${item.문의량.toLocaleString()}건 (${item.퍼센트}%)`}
-                  >
-                    <div style={{
-                      width: "12px",
-                      height: "12px",
-                      borderRadius: "50%",
-                      backgroundColor: colors[index % colors.length]
-                    }}></div>
-                    <span>{item.고객유형}</span>
-                    <span style={{ color: "#666" }}>({item.퍼센트}%)</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        <CsatUploadSection onUploadSuccess={() => { loadCacheData(); loadCsatAnalysis(); }} />
-
-        {/* CSAT 분석 차트 */}
-        {csatData && csatData.status === "success" && (
-          <>
-            <CSatChartSection
-              csatSummary={csatData.요약}
-              totalResponses={csatData.총응답수}
-            />
-            
-            {/* 유형별 CSAT 점수 차트들 */}
-            {csatData.유형별 && Object.entries(csatData.유형별).map(([typeName, questions]) => (
-              <div key={typeName} style={{ backgroundColor: "white", padding: "20px", borderRadius: "8px", marginBottom: "20px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
-                  <h3 style={{ color: "#333", margin: 0 }}>{typeName}별 CSAT 점수</h3>
-                  <div style={{ display: "flex", gap: "8px" }}>
-                    {["A-1", "A-2", "A-4", "A-5"].map((question) => (
-                      <button
-                        key={question}
-                        onClick={() => setCsatQuestionFilter(question)}
-                        style={{
-                          padding: "6px 12px",
-                          border: "1px solid #ddd",
-                          borderRadius: "4px",
-                          backgroundColor: csatQuestionFilter === question ? "#007bff" : "white",
-                          color: csatQuestionFilter === question ? "white" : "#333",
-                          cursor: "pointer",
-                          fontSize: "12px"
-                        }}
+                    return (
+                      <div key={index} style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        padding: "4px 8px",
+                        backgroundColor: "#f8f9fa",
+                        borderRadius: "4px",
+                        fontSize: "12px",
+                        cursor: "pointer"
+                      }}
+                      title={`${item.고객유형}: ${item.문의량.toLocaleString()}건 (${item.퍼센트}%)`}
                       >
-                        {question}
-                      </button>
-                    ))}
-                  </div>
+                        <div style={{
+                          width: "12px",
+                          height: "12px",
+                          borderRadius: "50%",
+                          backgroundColor: colors[index % colors.length]
+                        }}></div>
+                        <span>{item.고객유형}</span>
+                        <span style={{ color: "#666" }}>({item.퍼센트}%)</span>
+                      </div>
+                    );
+                  })}
                 </div>
-                {csatQuestionFilter && questions[csatQuestionFilter] && (
-                  <CSatTypeChartSection
-                    typeScores={questions[csatQuestionFilter]}
-                    typeLabel={typeName}
-                  />
-                )}
               </div>
-            ))}
+            )}
           </>
         )}
-        <CacheStatusSection start={start} end={end} />
+
+        {/* CSAT 탭 */}
+        {activeTab === "CSAT" && (
+          <>
+            {csatData && csatData.status === "success" ? (
+              <>
+                <CSatChartSection
+                  csatSummary={csatData.요약}
+                  totalResponses={csatData.총응답수}
+                />
+                
+                {/* 유형별 CSAT 분석 */}
+                {csatData?.유형별 && Object.keys(csatData.유형별).length > 0 && (
+                  <CSatTypeChartSection
+                    typeScores={csatData.유형별}
+                    typeLabel="유형별"
+                  />
+                )}
+              </>
+            ) : (
+              <div style={{ 
+                backgroundColor: "white", 
+                padding: "40px", 
+                borderRadius: "8px", 
+                textAlign: "center",
+                color: "#666"
+              }}>
+                {csatData ? "CSAT 데이터 로드 중..." : "CSAT 데이터를 불러오는 중입니다..."}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Cache 탭 */}
+        {activeTab === "Cache" && (
+          <>
+            <CacheStatusSection start={start} end={end} />
+            
+            {/* 데이터 갱신 버튼 */}
+            <div style={{ 
+              backgroundColor: "white", 
+              padding: "20px", 
+              borderRadius: "8px", 
+              marginTop: "20px",
+              textAlign: "center"
+            }}>
+              <h3 style={{ margin: "0 0 20px 0", color: "#333" }}>캐시 관리</h3>
+              <button
+                onClick={() => loadCacheData("refresh")}
+                disabled={loading}
+                style={{
+                  padding: "12px 24px",
+                  backgroundColor: "#dc3545",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "6px",
+                  cursor: loading ? "not-allowed" : "pointer",
+                  fontSize: "16px",
+                  fontWeight: "bold",
+                  boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
+                }}
+              >
+                {loading ? "📥 갱신 중..." : "📥 전체 데이터 갱신"}
+              </button>
+              <p style={{ 
+                margin: "15px 0 0 0", 
+                fontSize: "14px", 
+                color: "#666",
+                fontStyle: "italic"
+              }}>
+                ⚠️ 주의: 기존 캐시를 완전히 삭제하고 전체 데이터를 새로 수집합니다
+              </p>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

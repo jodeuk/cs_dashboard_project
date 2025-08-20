@@ -8,7 +8,10 @@ const ChartSection = ({
   yLabel = "y축",
   loading = false,
   dateGroup = "월간",
-  onDateGroupChange = null
+  onDateGroupChange = null,
+  chartType = "line", // "line" 또는 "horizontalBar"
+  width = 650,
+  height = 350
 }) => {
   const svgRef = useRef();
   
@@ -43,14 +46,34 @@ const ChartSection = ({
     );
   }
 
-
-
-  // yLabel/xLabel이 "key" 값일 때 안전하게 처리
-  const yKey = typeof yLabel === "string" ? yLabel : "y";
-  const xKey = typeof xLabel === "string" ? xLabel : "x";
-  const maxValue = Math.max(...data.map(item => Number(item[yKey]) || 0));
-  const chartHeight = 350;
-  const chartWidth = 650;
+  // 표준화된 데이터 구조 {label, value} 사용
+  const yKey = "value";
+  const xKey = "label";
+  
+  // NaN 값 방어적 처리
+  const safeData = data.filter(item => {
+    const yValue = Number(item[yKey]);
+    return !isNaN(yValue) && isFinite(yValue) && yValue >= 0;
+  });
+  
+  if (safeData.length === 0) {
+    return (
+      <div style={{
+        backgroundColor: "#f8f9fa",
+        padding: "20px",
+        borderRadius: "8px",
+        marginBottom: "20px",
+        textAlign: "center",
+        color: "#666"
+      }}>
+        유효한 데이터가 없습니다.
+      </div>
+    );
+  }
+  
+  const maxValue = Math.max(...safeData.map(item => Number(item[yKey]) || 0));
+  const chartHeight = height;
+  const chartWidth = width;
 
   // 각 월의 첫 주인지 확인하는 함수
   const isFirstWeekOfMonth = (data, currentIndex) => {
@@ -65,17 +88,135 @@ const ChartSection = ({
     return currentItem.월레이블 !== prevItem.월레이블;
   };
 
+  // 가로막대 차트 그리기
+  const renderHorizontalBarChart = () => {
+    if (safeData.length === 0) return null;
+
+    const barHeight = 30;
+    const barSpacing = 10;
+    const totalBarHeight = safeData.length * (barHeight + barSpacing);
+    const chartPadding = 80;
+    const actualChartHeight = Math.max(totalBarHeight + chartPadding, chartHeight);
+    
+    return (
+      <svg ref={svgRef} width={chartWidth} height={actualChartHeight} style={{ margin: "0 auto", display: "block" }}>
+        {/* 배경 그리드 */}
+        <defs>
+          <pattern id="grid" width="50" height="50" patternUnits="userSpaceOnUse">
+            <path d="M 50 0 L 0 0 0 50" fill="none" stroke="#f0f0f0" strokeWidth="1"/>
+          </pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grid)" />
+        
+        {/* Y축 라벨 (카테고리명) */}
+        {safeData.map((item, idx) => {
+          const y = 40 + idx * (barHeight + barSpacing) + barHeight / 2;
+          return (
+            <text key={idx} x="10" y={y} fontSize="12" textAnchor="start" fill="#666" dominantBaseline="middle">
+              {item[xKey]}
+            </text>
+          );
+        })}
+        
+        {/* X축 라벨 (수치) */}
+        {(() => {
+          const getXAxisValues = (maxVal) => {
+            if (maxVal <= 50) return [0, 10, 20, 30, 40, 50];
+            if (maxVal <= 100) return [0, 20, 40, 60, 80, 100];
+            if (maxVal <= 200) return [0, 50, 100, 150, 200];
+            if (maxVal <= 500) return [0, 100, 200, 300, 400, 500];
+            if (maxVal <= 1000) return [0, 200, 400, 600, 800, 1000];
+            const step = Math.ceil(maxVal / 5 / 100) * 100;
+            const values = [];
+            for (let i = 0; i <= 5; i++) {
+              values.push(i * step);
+            }
+            return values;
+          };
+          
+          const xAxisValues = getXAxisValues(maxValue);
+          
+          return xAxisValues.map((value, idx) => {
+            const ratio = value / maxValue;
+            const x = 100 + (ratio * (chartWidth - 120));
+            return (
+              <g key={idx}>
+                <line x1={x} y1={actualChartHeight - 40} x2={x} y2={actualChartHeight - 35} stroke="#ccc" strokeWidth="1" />
+                <text x={x} y={actualChartHeight - 20} fontSize="12" textAnchor="middle" fill="#666">
+                  {value.toLocaleString()}
+                </text>
+              </g>
+            );
+          });
+        })()}
+        
+                 {/* 가로막대 */}
+         {safeData.map((item, idx) => {
+           const value = Number(item[yKey]) || 0;
+           const ratio = value / maxValue;
+           const y = 40 + idx * (barHeight + barSpacing);
+           const barWidth = ratio * (chartWidth - 120);
+           const colors = ["#007bff", "#28a745", "#ffc107", "#dc3545", "#6f42c1", "#fd7e14"];
+           const color = colors[idx % colors.length];
+          
+          return (
+            <g key={idx}>
+              <rect
+                x={100}
+                y={y}
+                width={barWidth}
+                height={barHeight}
+                fill={color}
+                rx="4"
+                style={{ cursor: "pointer" }}
+                onMouseEnter={(e) => {
+                  const tooltip = document.createElement('div');
+                  tooltip.style.cssText = `
+                    position: fixed;
+                    background: rgba(0,0,0,0.8);
+                    color: white;
+                    padding: 8px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                    pointer-events: none;
+                    z-index: 1000;
+                    left: ${e.clientX + 10}px;
+                    top: ${e.clientY - 10}px;
+                  `;
+                  tooltip.textContent = `${item[xKey]}: ${value.toLocaleString()}`;
+                  document.body.appendChild(tooltip);
+                  
+                  e.target.onmouseleave = () => document.body.removeChild(tooltip);
+                }}
+              />
+              {/* 막대 위에 수치 표시 */}
+              <text
+                x={100 + barWidth + 10}
+                y={y + barHeight / 2}
+                fontSize="12"
+                fill="#333"
+                dominantBaseline="middle"
+              >
+                {value.toLocaleString()}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    );
+  };
+
   // 라인 차트 그리기
   const renderLineChart = () => {
-    if (data.length === 0) return null;
+    if (safeData.length === 0) return null;
 
-         const points = data.map((item, idx) => {
-       const value = Number(item[yKey]) || 0;
-       // data.length가 1일 때 NaN 방지
-       const x = data.length === 1 ? chartWidth / 2 : (idx / (data.length - 1)) * (chartWidth - 60) + 30;
-       const y = chartHeight - 60 - ((value / maxValue) * (chartHeight - 120));
-       return { x, y, value, label: item[xKey] };
-     });
+    const points = safeData.map((item, idx) => {
+      const value = Number(item[yKey]) || 0;
+      // safeData.length가 1일 때 NaN 방지
+      const x = safeData.length === 1 ? chartWidth / 2 : (idx / (safeData.length - 1)) * (chartWidth - 60) + 30;
+      const y = chartHeight - 60 - ((value / maxValue) * (chartHeight - 120));
+      return { x, y, value, label: item[xKey] };
+    });
 
     // 라인 경로 생성
     const linePath = points.map((point, idx) => {
@@ -215,25 +356,27 @@ const ChartSection = ({
          marginBottom: "16px" 
        }}>
          <h3 style={{ color: "#333", margin: 0, marginRight: "12px" }}>{label}</h3>
-         <select
-           value={dateGroup}
-           onChange={(e) => {
-             if (onDateGroupChange) {
-               onDateGroupChange(e.target.value);
-             }
-           }}
-           style={{ 
-             padding: "4px 8px", 
-             borderRadius: "4px", 
-             border: "1px solid #ddd",
-             fontSize: "14px"
-           }}
-         >
-           <option value="월간">월간</option>
-           <option value="주간">주간</option>
-         </select>
+         {chartType === "line" && (
+           <select
+             value={dateGroup}
+             onChange={(e) => {
+               if (onDateGroupChange) {
+                 onDateGroupChange(e.target.value);
+               }
+             }}
+             style={{ 
+               padding: "4px 8px", 
+               borderRadius: "4px", 
+               border: "1px solid #ddd",
+               fontSize: "14px"
+             }}
+           >
+             <option value="월간">월간</option>
+             <option value="주간">주간</option>
+           </select>
+         )}
        </div>
-      {renderLineChart()}
+      {chartType === "horizontalBar" ? renderHorizontalBarChart() : renderLineChart()}
     </div>
   );
 };
