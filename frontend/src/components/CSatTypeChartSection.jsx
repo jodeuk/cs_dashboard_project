@@ -83,11 +83,11 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
             <h4 style={{ marginBottom: "16px", color: "#495057", fontSize: "16px" }}>
               {selectedType}별 {selectedCsat} 응답자수
             </h4>
-            <ResponsiveContainer width="100%" height={300}>
+            <ResponsiveContainer width="100%" height={400}>
               <BarChart data={chartData} layout="vertical" margin={{ top: 10, right: 10, left: 20, bottom: 10 }}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis type="number" />
-                <YAxis type="category" dataKey={selectedType} width={120} />
+                <YAxis type="category" dataKey={selectedType} width={200} />
                 <Tooltip 
                   formatter={(value, name) => [`${value}명`, '응답자수']}
                   labelFormatter={(label) => `${label}`}
@@ -103,11 +103,11 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
             <h4 style={{ marginBottom: "16px", color: "#495057", fontSize: "16px" }}>
               {selectedType}별 {selectedCsat} 평균점수
             </h4>
-            <ResponsiveContainer width="100%" height={300}>
+            <ResponsiveContainer width="100%" height={400}>
               <BarChart data={chartData} layout="vertical" margin={{ top: 10, right: 10, left: 20, bottom: 10 }}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis type="number" domain={[0, 5]} />
-                <YAxis type="category" dataKey={selectedType} width={120} />
+                <YAxis type="category" dataKey={selectedType} width={200} />
                 <Tooltip 
                   formatter={(value, name) => [`${value}점`, '평균점수']}
                   labelFormatter={(label) => `${label}`}
