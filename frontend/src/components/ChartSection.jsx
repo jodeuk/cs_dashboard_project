@@ -211,12 +211,12 @@ const ChartSection = ({
     if (safeData.length === 0) return null;
 
     const points = safeData.map((item, idx) => {
-      const value = Number(item[yKey]) || 0;
+       const value = Number(item[yKey]) || 0;
       // safeData.length가 1일 때 NaN 방지
       const x = safeData.length === 1 ? chartWidth / 2 : (idx / (safeData.length - 1)) * (chartWidth - 60) + 30;
-      const y = chartHeight - 60 - ((value / maxValue) * (chartHeight - 120));
-      return { x, y, value, label: item[xKey] };
-    });
+       const y = chartHeight - 60 - ((value / maxValue) * (chartHeight - 120));
+       return { x, y, value, label: item[xKey] };
+     });
 
     // 라인 경로 생성
     const linePath = points.map((point, idx) => {
@@ -277,17 +277,17 @@ const ChartSection = ({
               <text x={point.x} y={chartHeight - 40} fontSize="12" textAnchor="middle" fill="#666">
                 {point.label}
               </text>
-                         ) : (
+            ) : (
                /* 주간일 때는 월 레이블만 표시 (첫 주에만) */
                <g>
                  {/* 월 레이블 (각 월의 첫 주에만 표시) */}
                  {data[idx] && data[idx].월레이블 && isFirstWeekOfMonth(data, idx) && (
                    <text x={point.x} y={chartHeight - 40} fontSize="13" textAnchor="middle" fill="#007bff" fontWeight="bold">
-                     {data[idx].월레이블}
-                   </text>
-                 )}
-               </g>
-             )}
+                    {data[idx].월레이블}
+                  </text>
+                )}
+              </g>
+            )}
           </g>
         ))}
         
@@ -357,23 +357,23 @@ const ChartSection = ({
        }}>
          <h3 style={{ color: "#333", margin: 0, marginRight: "12px" }}>{label}</h3>
          {chartType === "line" && (
-           <select
-             value={dateGroup}
-             onChange={(e) => {
-               if (onDateGroupChange) {
-                 onDateGroupChange(e.target.value);
-               }
-             }}
-             style={{ 
-               padding: "4px 8px", 
-               borderRadius: "4px", 
-               border: "1px solid #ddd",
-               fontSize: "14px"
-             }}
-           >
-             <option value="월간">월간</option>
-             <option value="주간">주간</option>
-           </select>
+         <select
+           value={dateGroup}
+           onChange={(e) => {
+             if (onDateGroupChange) {
+               onDateGroupChange(e.target.value);
+             }
+           }}
+           style={{ 
+             padding: "4px 8px", 
+             borderRadius: "4px", 
+             border: "1px solid #ddd",
+             fontSize: "14px"
+           }}
+         >
+           <option value="월간">월간</option>
+           <option value="주간">주간</option>
+         </select>
          )}
        </div>
       {chartType === "horizontalBar" ? renderHorizontalBarChart() : renderLineChart()}

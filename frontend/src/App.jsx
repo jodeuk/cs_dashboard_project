@@ -74,6 +74,7 @@ function App() {
   const [end, setEnd] = useState(todayStr);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [success, setSuccess] = useState(null);
   const [apiConnected, setApiConnected] = useState(null);
   const [csatData, setCsatData] = useState(null);
   const [csatQuestionFilter, setCsatQuestionFilter] = useState("A-1"); // CSAT 질문 필터
@@ -126,28 +127,44 @@ function App() {
       setFilterOptions(opts);
       
       if (refreshMode === "refresh") {
-        setError("✅ 데이터가 완전히 갱신되었습니다.");
-        setTimeout(() => setError(null), 3000); // 3초 후 메시지 제거
+        setSuccess("✅ 데이터가 완전히 갱신되었습니다.");
+        setTimeout(() => setSuccess(null), 3000); // 3초 후 메시지 제거
       } else if (refreshMode === "update") {
-        setError("✅ 데이터가 최신화되었습니다.");
-        setTimeout(() => setError(null), 3000); // 3초 후 메시지 제거
+        // CS 데이터 최신화 완료
+        console.log("📥 CS 데이터 최신화 완료");
+        setSuccess("✅ CS 데이터가 최신화되었습니다.");
+        setTimeout(() => setSuccess(null), 3000);
         
-        // CSAT 데이터도 최신화
-        console.log("📥 CSAT 데이터 최신화 시작...");
-        try {
-          // 백엔드에서 자동으로 캐시 범위 계산하여 CSAT 최신화
-          const csatRes = await fetch(`${process.env.REACT_APP_API_BASE}/api/cache/refresh?force=true&include_csat=true`);
-          if (csatRes.ok) {
-            const csatResult = await csatRes.json();
-            console.log("✅ CSAT 최신화 완료:", csatResult);
-            // CSAT 데이터 다시 로드
-            loadCsatAnalysis();
-          } else {
-            console.error("❌ CSAT 최신화 API 응답 오류:", csatRes.status);
+        // CS 데이터 최신화 완료 후 로딩 상태 해제
+        setLoading(false);
+        
+        // CSAT 데이터 최신화는 백그라운드에서 진행 (로딩 상태에 영향 없음)
+        (async () => {
+          try {
+            const oneWeekAgo = new Date();
+            oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+            const csatStart = oneWeekAgo.toISOString().split('T')[0];  // 8/13
+            const csatEnd = todayStr;  // 8/20
+            
+            console.log("📥 CSAT 최신화 시작 (백그라운드):", csatStart, "~", csatEnd);
+            
+            // CS와 동일한 방식으로 CSAT 최신화
+            const csatRes = await fetch(`${process.env.REACT_APP_API_BASE}/api/cache/refresh?start=${csatStart}&end=${csatEnd}&force=true&include_csat=true`);
+            if (csatRes.ok) {
+              const csatResult = await csatRes.json();
+              console.log("✅ CSAT 최신화 완료:", csatResult);
+              // CSAT 데이터 다시 로드
+              loadCsatAnalysis();
+              // CSAT 최신화 완료 메시지
+              setSuccess("✅ CSAT 데이터도 최신화되었습니다.");
+              setTimeout(() => setSuccess(null), 3000);
+            } else {
+              console.error("❌ CSAT 최신화 API 응답 오류:", csatRes.status);
+            }
+          } catch (err) {
+            console.error("❌ CSAT 최신화 실패:", err);
           }
-        } catch (err) {
-          console.error("❌ CSAT 최신화 실패:", err);
-        }
+        })();
       }
     } catch (err) {
       setError("캐시 데이터 로드 실패: " + err.message);
@@ -270,7 +287,7 @@ function App() {
     // 추가 필터링
     const filtered = filteredRows.filter((item) => {
 
-      if (filterVals.고객유형 && filterVals.고객유형 !== "전체") {
+    if (filterVals.고객유형 && filterVals.고객유형 !== "전체") {
         if (
           item.고객유형 !== filterVals.고객유형 &&
           item.고객유형_1차 !== filterVals.고객유형 &&
@@ -280,8 +297,8 @@ function App() {
       }
       if (filterVals.고객유형_2차 && filterVals.고객유형_2차 !== "전체") {
         if (item.고객유형_2차 !== filterVals.고객유형_2차) return false;
-      }
-      if (filterVals.문의유형 && filterVals.문의유형 !== "전체") {
+    }
+    if (filterVals.문의유형 && filterVals.문의유형 !== "전체") {
         if (
           item.문의유형 !== filterVals.문의유형 &&
           item.문의유형_1차 !== filterVals.문의유형 &&
@@ -291,8 +308,8 @@ function App() {
       }
       if (filterVals.문의유형_2차 && filterVals.문의유형_2차 !== "전체") {
         if (item.문의유형_2차 !== filterVals.문의유형_2차) return false;
-      }
-      if (filterVals.서비스유형 && filterVals.서비스유형 !== "전체") {
+    }
+    if (filterVals.서비스유형 && filterVals.서비스유형 !== "전체") {
         if (
           item.서비스유형 !== filterVals.서비스유형 &&
           item.서비스유형_1차 !== filterVals.서비스유형 &&
@@ -400,18 +417,46 @@ function App() {
           map[weekKey] = { 
             x축: `${weekStart.getMonth() + 1}/${weekStart.getDate()}`, 
             문의량: 0,
-            월레이블: isFirstWeekOfMonth ? `${weekStart.getMonth() + 1}월` : null
+            월레이블: isFirstWeekOfMonth ? `${weekStart.getMonth() + 1}월` : null,
+            month: weekStart.getMonth() + 1  // 월 정보 추가
           };
         }
         map[weekKey].문의량 += 1;
       });
-      return Object.values(map).sort((a, b) => {
+      const weeklyRaw = Object.values(map).sort((a, b) => {
         const [monthA, dayA] = a.x축.split('/').map(Number);
         const [monthB, dayB] = b.x축.split('/').map(Number);
         if (monthA !== monthB) return monthA - monthB;
         return dayA - dayB;
       });
-      console.log("🔍 chartData 주간 결과:", chartData);
+      console.log("🔍 chartData 주간 결과:", weeklyRaw);
+      
+      // 주간 차트는 월레이블 정보를 유지하기 위해 normalizeChartRows 사용하지 않음
+      // ChartSection에서 label, value, 월레이블을 모두 사용할 수 있도록
+      const chartData = weeklyRaw.map((item, index) => {
+        // 각 월의 첫 번째 데이터가 있는 주에 월 레이블 표시
+        let 월레이블 = item.월레이블;
+        if (!월레이블 && index > 0) {
+          const prevItem = weeklyRaw[index - 1];
+          if (prevItem && prevItem.month !== item.month) {
+            월레이블 = `${item.month}월`;
+          }
+        }
+        
+          return {
+          label: item.x축,
+          value: item.문의량,
+          월레이블: 월레이블
+          };
+        });
+      
+      // 빈 배열 가드 (NaN 방지)
+      if (!chartData.length) {
+        console.warn("📉 chart guard: empty chartData");
+        return [];
+      }
+      
+      console.log("🔍 chartData 주간 결과 (월레이블 포함):", chartData);
       return chartData;
     }
   }, [filteredRows, dateGroup]);
@@ -432,21 +477,57 @@ function App() {
           operationTotalReplyTime: [],
           operationResolutionTime: [],
         };
-      map[month].operationWaitingTime.push(timeToSec(item.operationWaitingTime));
-      map[month].operationAvgReplyTime.push(timeToSec(item.operationAvgReplyTime));
-      map[month].operationTotalReplyTime.push(timeToSec(item.operationTotalReplyTime));
-      map[month].operationResolutionTime.push(timeToSec(item.operationResolutionTime));
+      
+      // 유효한 데이터만 배열에 추가 (None 값 제외, 실제 값만)
+      if (item.operationWaitingTime != null && item.operationWaitingTime !== '') {
+        const waitingTime = timeToSec(item.operationWaitingTime);
+        if (waitingTime > 0) map[month].operationWaitingTime.push(waitingTime);
+      }
+      
+      if (item.operationAvgReplyTime != null && item.operationAvgReplyTime !== '') {
+        const avgReplyTime = timeToSec(item.operationAvgReplyTime);
+        if (avgReplyTime > 0) map[month].operationAvgReplyTime.push(avgReplyTime);
+      }
+      
+      if (item.operationTotalReplyTime != null && item.operationTotalReplyTime !== '') {
+        const totalReplyTime = timeToSec(item.operationTotalReplyTime);
+        if (totalReplyTime > 0) map[month].operationTotalReplyTime.push(totalReplyTime);
+      }
+      
+      if (item.operationResolutionTime != null && item.operationResolutionTime !== '') {
+        const resolutionTime = timeToSec(item.operationResolutionTime);
+        if (resolutionTime > 0) {
+          map[month].operationResolutionTime.push(resolutionTime);
+          // 7월 데이터 디버깅
+          if (month === '2025-7') {
+            console.log(`🔍 7월 해결시간 데이터 추가:`, {
+              원본값: item.operationResolutionTime,
+              변환값: resolutionTime,
+              배열길이: map[month].operationResolutionTime.length
+            });
+          }
+        }
+      }
     });
 
-    return Object.values(map)
-      .map((m) => ({
-        x축: m.x축,
-        operationWaitingTime: avg(m.operationWaitingTime),
-        operationAvgReplyTime: avg(m.operationAvgReplyTime),
-        operationTotalReplyTime: avg(m.operationTotalReplyTime),
-        operationResolutionTime: avg(m.operationResolutionTime),
-      }))
-      .sort((a, b) => parseInt(a.x축) - parseInt(b.x축));
+    const result = Object.values(map)
+      .map((m) => {
+        const avgWaitingTime = avg(m.operationWaitingTime);
+        const avgReplyTime = avg(m.operationAvgReplyTime);
+        const avgTotalReplyTime = avg(m.operationTotalReplyTime);
+        const avgResolutionTime = avg(m.operationResolutionTime);
+        
+        return {
+          x축: m.x축,
+          operationWaitingTime: avgWaitingTime > 0 ? avgWaitingTime : null,
+          operationAvgReplyTime: avgReplyTime > 0 ? avgReplyTime : null,
+          operationTotalReplyTime: avgTotalReplyTime > 0 ? avgTotalReplyTime : null,
+          operationResolutionTime: avgResolutionTime > 0 ? avgResolutionTime : null,
+        };
+      })
+      .sort((a, b) => parseInt(a.x축) - parseInt(a.x축));
+    
+    return result;
   }, [filteredRows, dateGroup]);
 
   // --- 통계 ---
@@ -788,6 +869,18 @@ function App() {
           </div>
         )}
 
+        {success && (
+          <div style={{
+            backgroundColor: "#e8f5e8",
+            color: "#2e7d32",
+            padding: "12px",
+            borderRadius: "4px",
+            marginBottom: "16px"
+          }}>
+            ✅ {success}
+          </div>
+        )}
+
         {loading && (
           <div style={{
             backgroundColor: "#e3f2fd",
@@ -1076,7 +1169,7 @@ function App() {
         {/* Cache 탭 */}
         {activeTab === "Cache" && (
           <>
-            <CacheStatusSection start={start} end={end} />
+        <CacheStatusSection start={start} end={end} />
             
             {/* 데이터 갱신 버튼 */}
             <div style={{ 

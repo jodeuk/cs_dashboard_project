@@ -171,11 +171,11 @@ async def refresh_cache(
                     print(f"[CSAT] 자동 범위 계산 실패, 기본 범위 사용: {e}")
                     csat_saved = await build_and_cache_csat_rows(start, end)
                     
-            return {
+        return {
                 "message": "강제 새로고침 완료(원격 호출 포함)",
                 "userchats_rows": len(df),
                 "csat_rows_saved": csat_saved
-            }
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"캐시 새로고침 실패: {str(e)}")
 
@@ -410,9 +410,9 @@ async def csat_analysis(start: str = Query(...), end: str = Query(...)):
                 raw_avg = valid.mean()
                 if pd.notna(raw_avg) and np.isfinite(raw_avg):
                     avg_score = float(raw_avg)
-                else:
+                            else:
                     avg_score = 0.0
-            else:
+                        else:
                 avg_score = 0.0
             
             summary_list.append({
