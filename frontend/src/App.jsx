@@ -443,12 +443,17 @@ function App() {
           }
         }
         
-          return {
+        // 첫 번째 데이터에는 항상 월 레이블 표시 (기간 필터링으로 인해 월의 첫 주가 빠져있을 수 있음)
+        if (index === 0 && !월레이블) {
+          월레이블 = `${item.month}월`;
+        }
+        
+        return {
           label: item.x축,
           value: item.문의량,
           월레이블: 월레이블
-          };
-        });
+        };
+      });
       
       // 빈 배열 가드 (NaN 방지)
       if (!chartData.length) {
