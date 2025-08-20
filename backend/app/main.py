@@ -410,9 +410,9 @@ async def csat_analysis(start: str = Query(...), end: str = Query(...)):
                 raw_avg = valid.mean()
                 if pd.notna(raw_avg) and np.isfinite(raw_avg):
                     avg_score = float(raw_avg)
-                            else:
+                else:
                     avg_score = 0.0
-                        else:
+            else:
                 avg_score = 0.0
             
             summary_list.append({
