@@ -659,7 +659,10 @@ async def get_cached_data(start_date: str, end_date: str, refresh_mode: str = "c
     print(f"[DEBUG] 중복 제거 시작")
     try:
         before_dedup = len(combined)
-        combined = combined.drop_duplicates(subset=['userId', 'firstAskedAt', 'createdAt'], keep='first')
+        if 'userChatId' in combined.columns:
+            combined = combined.drop_duplicates(subset=['userChatId'], keep='first')
+        else:
+            combined = combined.drop_duplicates(subset=['userId', 'firstAskedAt', 'createdAt'], keep='first')
         after_dedup = len(combined)
         print(f"[DEBUG] 중복 제거 완료: {before_dedup} → {after_dedup} rows")
     except Exception as e:
@@ -789,6 +792,13 @@ async def build_and_cache_csat_rows(start_date: str, end_date: str) -> int:
 
     # 6) 월별로 쪼개서 저장 (userchats 캐시와 동일 정책)
     csat_df = pd.DataFrame(rows)
+    
+    # CSAT 캐시 레코드 컬럼 보장(디버그 편의)
+    need = ["firstAskedAt","userId","userChatId","comment_3","comment_6","A-1","A-2","A-4","A-5","csatSubmittedAt","personId"]
+    for c in need:
+        if c not in csat_df.columns:
+            csat_df[c] = None
+    
     csat_df["firstAskedAt"] = pd.to_datetime(csat_df["firstAskedAt"], errors="coerce")
 
     # 7) 월별로 쪼개서 저장
@@ -898,18 +908,44 @@ def load_csat_rows_from_cache(start_date: str, end_date: str) -> pd.DataFrame:
     
     return out
 
-def get_filtered_df(df: pd.DataFrame, 고객유형="전체", 문의유형="전체", 서비스유형="전체", 
-                   문의유형_2차="전체", 서비스유형_2차="전체") -> pd.DataFrame:
+def get_filtered_df(df: pd.DataFrame, 고객유형="전체", 고객유형_2차="전체", 문의유형="전체", 
+                   문의유형_2차="전체", 서비스유형="전체", 서비스유형_2차="전체") -> pd.DataFrame:
     temp = df.copy()
-    required_columns = ["고객유형","문의유형","서비스유형","문의유형_2차","서비스유형_2차"]
+    required_columns = ["고객유형","고객유형_2차","문의유형","문의유형_2차","서비스유형","서비스유형_2차"]
     for col in required_columns:
         if col not in temp.columns:
             temp[col] = None
-    if 고객유형 != "전체": temp = temp[temp["고객유형"] == 고객유형]
-    if 문의유형 != "전체": temp = temp[temp["문의유형"] == 문의유형]
-    if 문의유형_2차 != "전체": temp = temp[temp["문의유형_2차"] == 문의유형_2차]
-    if 서비스유형 != "전체": temp = temp[temp["서비스유형"] == 서비스유형]
-    if 서비스유형_2차 != "전체": temp = temp[temp["서비스유형_2차"] == 서비스유형_2차]
+    
+    # 쉼표로 구분된 다중 선택 처리 (OR 조건)
+    if 고객유형 != "전체": 
+        고객유형_리스트 = [v.strip() for v in 고객유형.split(',') if v.strip()]
+        if 고객유형_리스트:
+            temp = temp[temp["고객유형"].isin(고객유형_리스트)]
+    
+    if 고객유형_2차 != "전체": 
+        고객유형_2차_리스트 = [v.strip() for v in 고객유형_2차.split(',') if v.strip()]
+        if 고객유형_2차_리스트:
+            temp = temp[temp["고객유형_2차"].isin(고객유형_2차_리스트)]
+    
+    if 문의유형 != "전체": 
+        문의유형_리스트 = [v.strip() for v in 문의유형.split(',') if v.strip()]
+        if 문의유형_리스트:
+            temp = temp[temp["문의유형"].isin(문의유형_리스트)]
+    
+    if 문의유형_2차 != "전체": 
+        문의유형_2차_리스트 = [v.strip() for v in 문의유형_2차.split(',') if v.strip()]
+        if 문의유형_2차_리스트:
+            temp = temp[temp["문의유형_2차"].isin(문의유형_2차_리스트)]
+    
+    if 서비스유형 != "전체": 
+        서비스유형_리스트 = [v.strip() for v in 서비스유형.split(',') if v.strip()]
+        if 서비스유형_리스트:
+            temp = temp[temp["서비스유형"].isin(서비스유형_리스트)]
+    
+    if 서비스유형_2차 != "전체": 
+        서비스유형_2차_리스트 = [v.strip() for v in 서비스유형_2차.split(',') if v.strip()]
+        if 서비스유형_2차_리스트:
+            temp = temp[temp["서비스유형_2차"].isin(서비스유형_2차_리스트)]
     required_keys = ["userId","mediumType","workflowId","tags","firstAskedAt"]
     for k in required_keys:
         if k not in temp.columns:

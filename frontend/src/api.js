@@ -73,8 +73,30 @@ export async function apiCall(method, endpoint, params = {}, data = {}) {
 }
 
 // 기존 API들 함수화 (호환성을 위해 params 통일)
-export function fetchFilterOptions(start, end, refreshMode = "cache") {
-  return apiCall("get", "/filter-options", { start, end, refresh_mode: refreshMode });
+export async function fetchFilterOptions(start, end, refreshMode = "cache", filterParams = {}) {
+  const base = { start, end, refresh_mode: refreshMode };
+  const filters = {
+    고객유형: filterParams.고객유형 || "전체",
+    문의유형: filterParams.문의유형 || "전체",
+    서비스유형: filterParams.서비스유형 || "전체",
+  };
+  try {
+    // 1) 한글 키를 JSON 문자열로 래핑해 전달(서버의 쿼리 파서/인코딩 문제 회피)
+    return await apiCall("get", "/filter-options", { ...base, filters: JSON.stringify(filters) });
+  } catch (e1) {
+    try {
+      // 2) 최소 파라미터만 보내고 같은 엔드포인트 재시도(핸들러 자체 확인용)
+      return await apiCall("get", "/filter-options", base);
+    } catch (e2) {
+      // 3) 백엔드 라우트가 스네이크 케이스인 환경 폴백 + ASCII 키 사용
+      const ascii = {
+        customer_type: filters.고객유형,
+        inquiry_type: filters.문의유형,
+        service_type: filters.서비스유형,
+      };
+      return await apiCall("get", "/filter_options", { ...base, ...ascii });
+    }
+  }
 }
 export function fetchPeriodData(params) {
   return apiCall("get", "/period-data", params);
@@ -111,6 +133,10 @@ export function fetchSample(start, end, n = 5) {
 // 캐시 관리 API
 export function fetchCacheStatus() {
   return apiCall("get", "/cache/status");
+}
+
+export function fetchCSatTextAnalysis(start, end) {
+  return apiCall("get", "/csat-text-analysis", { start, end });
 }
 export function checkCacheForPeriod(start, end) {
   return apiCall("get", "/cache/check", { start, end });

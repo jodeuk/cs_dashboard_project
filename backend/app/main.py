@@ -183,7 +183,14 @@ async def refresh_cache(
 
 # 5-1. 필터 옵션
 @app.get("/api/filter-options")
-async def filter_options(start: str = Query(...), end: str = Query(...), refresh_mode: str = Query("cache")):
+async def filter_options(
+    start: str = Query(...), 
+    end: str = Query(...), 
+    refresh_mode: str = Query("cache"),
+    고객유형: str = Query("전체"),
+    문의유형: str = Query("전체"),
+    서비스유형: str = Query("전체")
+):
     try:
         print(f"[FILTER_OPTIONS] API 호출: start={start}, end={end}, refresh_mode={refresh_mode}")
         
@@ -201,6 +208,12 @@ async def filter_options(start: str = Query(...), end: str = Query(...), refresh
         def unique_nonempty(col):
             if col not in df.columns: return []
             vals = df[col].dropna()
+            vals = [v for v in vals if v and str(v).strip() != '']
+            return sorted(set(vals))
+            
+        def unique_nonempty_from_df(dataframe, col):
+            if col not in dataframe.columns: return []
+            vals = dataframe[col].dropna()
             vals = [v for v in vals if v and str(v).strip() != '']
             return sorted(set(vals))
 
@@ -221,14 +234,57 @@ async def filter_options(start: str = Query(...), end: str = Query(...), refresh
             print(f"[FILTER] 컬럼 '{col}' 1차 분류 결과: {result}")
             return result
 
-        return {
+        # 기본 1차 분류들
+        result = {
             "고객유형": ["전체"] + extract_primary("고객유형"),
-            "고객유형_2차": ["전체"] + unique_nonempty("고객유형_2차"),
             "문의유형": ["전체"] + extract_primary("문의유형"),
-            "문의유형_2차": ["전체"] + unique_nonempty("문의유형_2차"),
             "서비스유형": ["전체"] + extract_primary("서비스유형"),
-            "서비스유형_2차": ["전체"] + unique_nonempty("서비스유형_2차"),
         }
+        
+        # 2차 분류는 선택된 1차 분류에 따라 필터링
+        if 고객유형 != "전체":
+            # 선택된 고객유형의 세부 분류만
+            고객유형_리스트 = [v.strip() for v in 고객유형.split(',') if v.strip()]
+            print(f"[FILTER_OPTIONS] 고객유형 필터링: {고객유형_리스트}")
+            if 고객유형_리스트:
+                filtered_df = df[df["고객유형"].isin(고객유형_리스트)]
+                print(f"[FILTER_OPTIONS] 필터링된 데이터: {len(filtered_df)} rows")
+                고객유형_2차_options = ["전체"] + unique_nonempty_from_df(filtered_df, "고객유형_2차")
+                print(f"[FILTER_OPTIONS] 고객유형_2차 옵션: {고객유형_2차_options}")
+            else:
+                고객유형_2차_options = ["전체"]
+        else:
+            고객유형_2차_options = ["전체"]
+            
+        if 문의유형 != "전체":
+            # 선택된 문의유형의 세부 분류만
+            문의유형_리스트 = [v.strip() for v in 문의유형.split(',') if v.strip()]
+            if 문의유형_리스트:
+                filtered_df = df[df["문의유형"].isin(문의유형_리스트)]
+                문의유형_2차_options = ["전체"] + unique_nonempty_from_df(filtered_df, "문의유형_2차")
+            else:
+                문의유형_2차_options = ["전체"]
+        else:
+            문의유형_2차_options = ["전체"]
+            
+        if 서비스유형 != "전체":
+            # 선택된 서비스유형의 세부 분류만
+            서비스유형_리스트 = [v.strip() for v in 서비스유형.split(',') if v.strip()]
+            if 서비스유형_리스트:
+                filtered_df = df[df["서비스유형"].isin(서비스유형_리스트)]
+                서비스유형_2차_options = ["전체"] + unique_nonempty_from_df(filtered_df, "서비스유형_2차")
+            else:
+                서비스유형_2차_options = ["전체"]
+        else:
+            서비스유형_2차_options = ["전체"]
+        
+        result.update({
+            "고객유형_2차": 고객유형_2차_options,
+            "문의유형_2차": 문의유형_2차_options,
+            "서비스유형_2차": 서비스유형_2차_options,
+        })
+        
+        return result
     except Exception as e:
         return {
             "고객유형": ["전체"], "문의유형": ["전체"], "서비스유형": ["전체"],
@@ -260,9 +316,10 @@ async def period_data(
     end: str = Query(...), 
     refresh_mode: str = Query("cache"),
     고객유형: str = Query("전체"),
+    고객유형_2차: str = Query("전체"),
     문의유형: str = Query("전체"),
-    서비스유형: str = Query("전체"),
     문의유형_2차: str = Query("전체"),
+    서비스유형: str = Query("전체"),
     서비스유형_2차: str = Query("전체")
 ):
     """
@@ -297,13 +354,14 @@ async def period_data(
         filtered_df = get_filtered_df(
             df, 
             고객유형=고객유형,
+            고객유형_2차=고객유형_2차,
             문의유형=문의유형,
-            서비스유형=서비스유형,
             문의유형_2차=문의유형_2차,
+            서비스유형=서비스유형,
             서비스유형_2차=서비스유형_2차
         )
         
-        print(f"[FILTER] 유형 필터 적용: {고객유형}/{문의유형}/{서비스유형}/{문의유형_2차}/{서비스유형_2차}")
+        print(f"[FILTER] 유형 필터 적용: {고객유형}/{고객유형_2차}/{문의유형}/{문의유형_2차}/{서비스유형}/{서비스유형_2차}")
         print(f"[FILTER] 필터링 전: {len(df)} rows, 필터링 후: {len(filtered_df)} rows")
         print(f"[PERIOD] filtered rows(after type filters): {len(filtered_df)}")
         
@@ -350,102 +408,190 @@ async def csat_refresh(start: str = Query(...), end: str = Query(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"CSAT 강제 갱신 실패: {str(e)}")
 
-# 5-5. CSAT 분석 결과 (프론트엔드 호환성)
-@app.get("/api/csat-analysis")
-async def csat_analysis(start: str = Query(...), end: str = Query(...)):
+# 5-5-1. CSAT 텍스트 분석 (comment_3, comment_6)
+@app.get("/api/csat-text-analysis")
+async def csat_text_analysis(start: str = Query(...), end: str = Query(...)):
     """
-    CSAT 분석 결과를 반환합니다.
+    CSAT의 comment_3, comment_6 텍스트 데이터를 분석하여 반환합니다.
     """
     try:
         end = limit_end_date(end)
         csat_df = load_csat_rows_from_cache(start, end)
         
         if csat_df is None or csat_df.empty:
-            return {
-                "status": "success",
-                "총응답수": 0,
-                "요약": [],
-                "유형별": {}
+            return {"status": "error", "message": "CSAT 데이터가 없습니다."}
+        
+        # comment_3, comment_6 데이터 추출
+        comment_3_data = []
+        comment_6_data = []
+        
+        for _, row in csat_df.iterrows():
+            if pd.notna(row.get('comment_3')) and str(row['comment_3']).strip():
+                comment_3_data.append({
+                    "firstAskedAt": row['firstAskedAt'],
+                    "userId": row['userId'],
+                    "text": str(row['comment_3']).strip(),
+                    "tags": {
+                        "고객유형": row.get('고객유형', ''),
+                        "문의유형": row.get('문의유형', ''),
+                        "서비스유형": row.get('서비스유형', '')
+                    }
+                })
+            
+            if pd.notna(row.get('comment_6')) and str(row['comment_6']).strip():
+                comment_6_data.append({
+                    "firstAskedAt": row['firstAskedAt'],
+                    "userId": row['userId'],
+                    "text": str(row['comment_6']).strip(),
+                    "tags": {
+                        "고객유형": row.get('고객유형', ''),
+                        "문의유형": row.get('문의유형', ''),
+                        "서비스유형": row.get('서비스유형', '')
+                    }
+                })
+        
+        # 날짜순으로 정렬 (최신순)
+        comment_3_data.sort(key=lambda x: x.get('firstAskedAt', ''), reverse=True)
+        comment_6_data.sort(key=lambda x: x.get('firstAskedAt', ''), reverse=True)
+        
+        return {
+            "status": "success",
+            "comment_3": {
+                "total": len(comment_3_data),
+                "data": comment_3_data
+            },
+            "comment_6": {
+                "total": len(comment_6_data),
+                "data": comment_6_data
             }
+        }
         
-        # 기존 CS 데이터 로드 (userchats)
-        chats_df = await get_cached_data(start, end, refresh_mode="cache")
-        
-        # 🔧 컬럼 정규화: 조인 키 userId 사용
-        if "userId" not in csat_df.columns:
-            raise HTTPException(status_code=500, detail="CSAT 캐시에 userId가 없습니다.")
-        if "userId" not in chats_df.columns:
-            raise HTTPException(status_code=500, detail="CS 캐시에 userId가 없습니다. (최종 식별자 필요)")
+    except Exception as e:
+        print(f"[CSAT_TEXT] 분석 실패: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"CSAT 텍스트 분석 실패: {str(e)}")
 
-        # 유형별 집계 (personId로 JOIN, 최종 결과에 userIds 포함)
-        try:
-            enriched = enrich_csat_with_user_types(csat_df, chats_df)
-            type_scores = build_csat_type_scores(enriched)
-            print(f"[CSAT] 유형별 집계 완료: {len(type_scores)}개 유형")
-        except Exception as e:
-            type_scores = {}
-            print(f"[CSAT] 유형별 집계 실패: {type(e).__name__}: {e}")
-        
-        # 점수 항목 컬럼들
-        score_cols = ["A-1", "A-2", "A-4", "A-5"]
-        available_score_cols = [col for col in score_cols if col in csat_df.columns]
-        
-        if not available_score_cols:
-            return {
-                "status": "success",
-                "총응답수": len(csat_df),
-                "요약": [],
-                "유형별": type_scores
-            }
-        
-        # 항목별 요약 계산
+# 5-5. CSAT 분석 결과 (프론트엔드 호환성)
+@app.get("/api/csat-analysis")
+async def csat_analysis(start: str = Query(...), end: str = Query(...)):
+    """
+    캐시 전용 CSAT 분석:
+    - 절대 외부 API 호출 안 함
+    - userId/조인키가 없어도 500 던지지 않고 가능한 결과만 반환
+    - 상세 코멘트 포함(comments.comment_3 / comments.comment_6)
+    """
+    try:
+        end = limit_end_date(end)
+        csat_df = load_csat_rows_from_cache(start, end)
+
+        # 비어 있으면 빈 성공 응답
+        if csat_df is None or csat_df.empty:
+            return {"status": "success", "총응답수": 0, "요약": [], "유형별": {}, "comments": {
+                "comment_3": {"total": 0, "data": []},
+                "comment_6": {"total": 0, "data": []},
+            }}
+
+        import pandas as pd
+        import numpy as np
+
+        # ---- 코멘트 payload (프론트 상세의견용) ----
+        def _clean_ts(v):
+            try:
+                if pd.isna(v): return None
+                return pd.to_datetime(v, errors="coerce").isoformat()
+            except Exception:
+                return None
+
+        def _pack_comments(df, text_col, score_col_hint):
+            data = []
+            if text_col in df.columns:
+                for _, r in df.iterrows():
+                    txt = r.get(text_col)
+                    if pd.notna(txt) and str(txt).strip():
+                        data.append({
+                            "firstAskedAt": _clean_ts(r.get("firstAskedAt")),
+                            "userId": r.get("userId"),
+                            "personId": r.get("personId"),
+                            "userChatId": r.get("userChatId"),
+                            "text": str(txt).strip(),
+                            # 점수는 힌트 컬럼이 있으면 같이 내려줌(없어도 OK)
+                            "score": (pd.to_numeric(r.get(score_col_hint), errors="coerce")
+                                      if score_col_hint in df.columns else None),
+                            # 태그는 프론트에서 userchats 캐시와 매칭해 채워줌
+                        })
+            # 최신순 정렬
+            data.sort(key=lambda x: x.get("firstAskedAt") or "", reverse=True)
+            return {"total": len(data), "data": data}
+
+        comments_payload = {
+            "comment_3": _pack_comments(csat_df, "comment_3", "A-2"),
+            "comment_6": _pack_comments(csat_df, "comment_6", "A-5"),
+        }
+
+        # ---- 기본 요약 (A-1/2/4/5) ----
+        score_cols = [c for c in ["A-1", "A-2", "A-4", "A-5"] if c in csat_df.columns]
         summary_list = []
-        for col in available_score_cols:
-            series = pd.to_numeric(csat_df[col], errors='coerce')
+        for col in score_cols:
+            series = pd.to_numeric(csat_df[col], errors="coerce")
             valid = series.dropna()
-            cnt = int(valid.count())
-            
-            # NaN/inf 값 안전하게 처리
-            if cnt > 0:
-                raw_avg = valid.mean()
-                if pd.notna(raw_avg) and np.isfinite(raw_avg):
-                    avg_score = float(raw_avg)
-                else:
-                    avg_score = 0.0
-            else:
-                avg_score = 0.0
-            
+            avg_score = float(valid.mean()) if len(valid) > 0 and np.isfinite(valid.mean()) else 0.0
             summary_list.append({
                 "항목": col,
                 "평균점수": round(avg_score, 2),
-                "응답자수": cnt,
-                "라벨": f"{col} ({round(avg_score, 2)}점)"
+                "응답자수": int(valid.count()),
+                "라벨": f"{col} ({round(avg_score, 2)}점)",
             })
-        
-        # 응답 데이터 안전성 검사
+
+        # ---- 유형별 집계(가능할 때만) : 캐시만 사용, 조인 실패해도 스킵 ----
+        type_scores = {}
         try:
-            response_data = {
-                "status": "success",
-                "총응답수": int(len(csat_df)),
-                "요약": summary_list,
-                "유형별": type_scores,   # ← 각 레코드에 userIds 포함
-            }
-            
-            # JSON 직렬화 테스트
-            import json
-            json.dumps(response_data)
-            print(f"[CSAT] 응답 데이터 JSON 직렬화 성공: {len(summary_list)}개 요약, {len(type_scores)}개 유형")
-            
-            return response_data
-            
-        except Exception as json_error:
-            print(f"[CSAT] JSON 직렬화 실패: {type(json_error).__name__}: {json_error}")
-            print(f"[CSAT] 문제 데이터: 요약={len(summary_list)}, 유형별={len(type_scores)}")
-            raise HTTPException(status_code=500, detail=f"CSAT 응답 JSON 직렬화 실패: {str(json_error)}")
-        
+            chats_df = await get_cached_data(start, end, refresh_mode="cache")  # 캐시 전용
+            if chats_df is not None and not chats_df.empty:
+                # 조인키 우선순위: userId → personId → userChatId
+                join_key = next((k for k in ["userId", "personId", "userChatId"]
+                                 if k in csat_df.columns and k in chats_df.columns), None)
+                if join_key == "userId":
+                    # 기존 함수 재사용
+                    enriched = enrich_csat_with_user_types(csat_df, chats_df)
+                elif join_key is not None:
+                    # 간단 조인(1차 분류만 가져와 붙임)
+                    need_cols = ["userId", "personId", "userChatId", "문의유형", "고객유형", "서비스유형"]
+                    use_cols = [c for c in need_cols if c in chats_df.columns]
+                    enriched = pd.merge(
+                        csat_df.copy(),
+                        chats_df[use_cols].drop_duplicates(subset=[join_key], keep="last"),
+                        on=join_key,
+                        how="inner",
+                    )
+                else:
+                    enriched = pd.DataFrame()
+
+                if enriched is not None and not enriched.empty:
+                    type_scores = build_csat_type_scores(enriched)
+        except Exception as e:
+            print(f"[CSAT] 유형별 집계 스킵: {type(e).__name__}: {e}")
+            type_scores = {}
+
+        # ---- 최종 응답 ----
+        resp = {
+            "status": "success",
+            "총응답수": int(len(csat_df)),
+            "요약": summary_list,
+            "유형별": type_scores,     # 조인 안되면 {}
+            "comments": comments_payload,
+        }
+
+        # 직렬화 확인
+        import json
+        json.dumps(resp)
+        return resp
+
     except Exception as e:
         print(f"[CSAT] 전체 처리 실패: {type(e).__name__}: {e}")
-        raise HTTPException(status_code=500, detail=f"CSAT 분석 실패: {str(e)}")
+        # 어떤 경우에도 500이 전체 탭을 죽이지 않도록, 안전한 빈 결과 반환
+        return {"status": "success", "총응답수": 0, "요약": [], "유형별": {}, "comments": {
+            "comment_3": {"total": 0, "data": []},
+            "comment_6": {"total": 0, "data": []},
+        }}
 
 # 6. (기존) 샘플/단일 조회 등 필요시 유지
 @app.get("/api/user-chat/{userchat_id}")
