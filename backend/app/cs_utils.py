@@ -4,10 +4,14 @@ import pandas as pd
 import numpy as np
 import json
 import pickle
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time as dtime
 from typing import List, Dict, Optional, Tuple
 import asyncio
+import re
 from dotenv import load_dotenv
+
+# CSAT 빌더 중복 실행 방지 락
+csat_build_lock = asyncio.Lock()
 
 print("====[CS_UTILS.PY 코드가 Docker에서 로드되었습니다]====")
 
@@ -37,6 +41,172 @@ print(f"[DEBUG] 캐시 디렉토리 내 파일: {os.listdir(CACHE_DIR) if os.pat
 
 load_dotenv()
 
+# ==== 영업시간 설정 (KST, 평일만) ====
+BIZ_TZ = "Asia/Seoul"
+
+# 여러 구간 지원: "HH:MM-HH:MM,HH:MM-HH:MM" 형식
+# 기본값: 평일 10:00-12:00, 13:00-18:00 (점심 12-13 제외)
+BUSINESS_WINDOWS = os.getenv("BUSINESS_WINDOWS", "10:00-12:00,13:00-18:00")
+
+def _parse_windows(s: str):
+    wins = []
+    for seg in (s or "").split(","):
+        seg = seg.strip()
+        if not seg or "-" not in seg:
+            continue
+        a, b = seg.split("-")
+        ha, ma = map(int, a.split(":"))
+        hb, mb = map(int, b.split(":"))
+        wins.append(((ha, ma), (hb, mb)))
+    # 파싱 실패 시 안전 기본값(10-12,13-18)
+    return wins or [((10,0),(12,0)), ((13,0),(18,0))]
+
+_BIZ_WINDOWS = _parse_windows(BUSINESS_WINDOWS)
+
+# 주말 제외(월=0 … 금=4)
+WEEKDAYS = {0,1,2,3,4}
+
+# CSV "YYYY-MM-DD,YYYY-MM-DD"
+_HOLS = set()
+for _d in filter(None, (os.getenv("BUSINESS_HOLIDAYS", "").split(","))):
+    try:
+        _HOLS.add(pd.to_datetime(_d.strip()).date())
+    except Exception:
+        pass
+
+def _to_kst_naive(dt):
+    if dt is None or pd.isna(dt):
+        return None
+    dt = pd.to_datetime(dt, errors="coerce")
+    if pd.isna(dt):
+        return None
+    # tz-aware -> Asia/Seoul로 변환 후 naive
+    if getattr(dt, "tzinfo", None) is not None or getattr(getattr(dt, "tz", None), "zone", None):
+        return dt.tz_convert(BIZ_TZ).tz_localize(None)
+    return dt
+
+def business_seconds_between(start, end,
+                             windows=_BIZ_WINDOWS,
+                             weekdays=WEEKDAYS,
+                             holidays=_HOLS):
+    """
+    start~end 사이에서 '평일'의 지정된 영업시간 구간들만 누적(초).
+    예: windows=[((10,0),(12,0)), ((13,0),(18,0))]  → 점심 시간 제외
+    """
+    s = _to_kst_naive(start); e = _to_kst_naive(end)
+    if s is None or e is None or e <= s:
+        return 0
+
+    total = 0
+    cur = s.normalize()  # 00:00
+    end_day = e.normalize()
+    while cur <= end_day:
+        d = cur.date()
+        if (cur.weekday() in weekdays) and (d not in holidays):
+            for (sh, sm), (eh, em) in windows:
+                day_start = cur.replace(hour=sh, minute=sm, second=0, microsecond=0)
+                day_end   = cur.replace(hour=eh, minute=em, second=0, microsecond=0)
+                # 이 구간과 [s,e] 교집합
+                seg_start = max(s, day_start)
+                seg_end   = min(e, day_end)
+                if seg_end > seg_start:
+                    total += int((seg_end - seg_start).total_seconds())
+        cur += pd.Timedelta(days=1)
+    return max(0, total)
+
+def seconds_to_hms(sec: int) -> str:
+    if sec <= 0:
+        return "00:00:00"
+    h = sec // 3600
+    m = (sec % 3600) // 60
+    s = sec % 60
+    return f"{h:02}:{m:02}:{s:02}"
+
+# === [NEW] 영업시간 계산 유틸 ==============================
+WORK_BLOCKS = [(dtime(10,0), dtime(12,0)), (dtime(13,0), dtime(18,0))]  # 평일 10-12, 13-18
+WORKWEEK = set(range(0,5))  # 월(0)~금(4)
+
+def _overlap_minutes(a_start, a_end, b_start, b_end) -> int:
+    s = max(a_start, b_start)
+    e = min(a_end, b_end)
+    if e <= s:
+        return 0
+    return int((e - s).total_seconds() // 60)
+
+def working_minutes_between_kst(start_dt, end_dt) -> int:
+    """
+    start_dt ~ end_dt 사이의 '영업시간' 분(min)만 누적.
+    - 평일만 카운트
+    - 10:00~12:00, 13:00~18:00
+    - 점심(12~13)은 제외
+    - 입력은 KST 'naive' Timestamp를 가정 (convert_time에서 보정)
+    """
+    try:
+        if pd.isna(start_dt) or pd.isna(end_dt) or end_dt <= start_dt:
+            return 0
+        # 일 단위 루프
+        minutes = 0
+        cur = pd.Timestamp(start_dt.date())
+        last = pd.Timestamp(end_dt.date())
+        while cur <= last:
+            if cur.weekday() in WORKWEEK:
+                for (ws, we) in WORK_BLOCKS:
+                    w_start = pd.Timestamp.combine(cur, ws)
+                    w_end   = pd.Timestamp.combine(cur, we)
+                    minutes += _overlap_minutes(start_dt, end_dt, w_start, w_end)
+            cur += pd.Timedelta(days=1)
+        return minutes
+    except Exception:
+        return 0
+
+def _fmt_hhmmss_from_minutes(mins: int) -> str:
+    h = mins // 60
+    m = mins % 60
+    return f"{int(h):02}:{int(m):02}:00"
+
+# === [REPLACE] attach_resolution_fallback ==================
+def attach_resolution_fallback(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    operationResolutionTime(문자열 H:M:S) 이 비어있는 행에 한해서,
+    openedAt~closedAt 영업시간 기반으로 계산한 값을 직접 채워넣는다.
+    - 점심(12~13) 제외, 평일 10-12/13-18만 카운트
+    - 계산 결과가 0분이면 채우지 않음(그대로 None 유지)
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    for c in ["openedAt", "closedAt"]:
+        if c not in out.columns:
+            out[c] = pd.NaT
+        else:
+            out[c] = pd.to_datetime(out[c], errors="coerce")
+
+    if "operationResolutionTime" not in out.columns:
+        out["operationResolutionTime"] = None
+
+    def _blank_time(x):
+        if x is None: return True
+        if isinstance(x, str):
+            s = x.strip().lower()
+            return s in ("", "nan", "null", "undefined", "00:00:00")
+        return False
+
+    # 필요 행만 계산해서 덮어쓰기
+    for idx, row in out.iterrows():
+        base = row.get("operationResolutionTime")
+        if not _blank_time(base):
+            continue  # 이미 값 있으면 건드리지 않음
+        oa, ca = row.get("openedAt"), row.get("closedAt")
+        if pd.isna(oa) or pd.isna(ca):
+            continue
+        mins = working_minutes_between_kst(oa, ca)
+        if mins and mins > 0:
+            out.at[idx, "operationResolutionTime"] = _fmt_hhmmss_from_minutes(mins)
+
+    return out
+# ===========================================================
+
 class ChannelTalkAPI:
     def __init__(self):
         self.base_url = "https://api.channel.io"
@@ -47,6 +217,24 @@ class ChannelTalkAPI:
             "x-access-secret": self.access_secret,
             "Content-Type": "application/json"
         }
+
+    # === (RESTORED) CSAT 라벨 정규화 유틸 ===
+    def _clean_label(self, s: str) -> str:
+        """폼 라벨의 앞뒤 공백/불필요한 구분자 제거 (한글 키워드 매칭 보존)."""
+        if not s:
+            return ""
+        s = str(s)
+        # 줄바꿈/중복 공백 정리 및 흔한 구분자 제거
+        s = re.sub(r"\s+", " ", s).strip()
+        s = s.replace("·", " ").replace("•", " ").replace(":", " ").replace("–", "-").replace("—", "-")
+        return s
+
+    def _leading_num(self, s: str):
+        """문항 앞의 숫자(예: '1) ...', '3 . ...')를 정수로 반환. 없으면 None."""
+        if not s:
+            return None
+        m = re.match(r"^\s*([0-9]+)", str(s))
+        return int(m.group(1)) if m else None
 
     async def _ensure_keys(self):
         if not self.access_key or not self.access_secret:
@@ -68,9 +256,7 @@ class ChannelTalkAPI:
 
         all_userchats, since, page_count = [], None, 0
         max_pages = 10
-        collected_ids = set()
-        last_next = None
-        consecutive_same_next = 0
+        collected_ids = set()  # userChat 단위로 중복 방지
         
         try:
             while page_count < max_pages:
@@ -92,34 +278,27 @@ class ChannelTalkAPI:
                     break
                 
                 for chat in user_chats:
-                    user_id = chat.get("userId")
-                    if user_id and user_id not in collected_ids:
+                    chat_id = (
+                        chat.get("id")
+                        or chat.get("chatId")
+                        or (chat.get("mainKey") or "").replace("userChat-", "")
+                    )
+                    if chat_id and chat_id not in collected_ids:
                         all_userchats.append(chat)
-                        collected_ids.add(user_id)
+                        collected_ids.add(chat_id)
                 
                 if not next_value or not str(next_value).strip():
                     break
                 
-                if next_value == last_next:
-                    consecutive_same_next += 1
-                    if consecutive_same_next >= 2:
-                        break
-                else:
-                    consecutive_same_next = 0
-                
-                if user_chats:
-                    latest_ts = user_chats[0].get("firstAskedAt")
-                    if latest_ts and latest_ts < start_ts:
-                        break
-                
                 since = next_value
-                last_next = next_value
                     
         except Exception as e:
             print(f"[get_userchats] 오류: {e}")
             raise
         
         print(f"[API] 총 수집된 채팅 수: {len(all_userchats)} (기간: {start_date} ~ {end_date})")
+        await self._hydrate_open_closed(all_userchats)  # openedAt/closedAt 보강 (update/refresh 경로에서만)
+        print(f"[API] openedAt/closedAt 보강 완료 후 반환: {len(all_userchats)} chats")
         return all_userchats
 
     async def get_userchat_by_id(self, userchat_id: str) -> Dict:
@@ -129,6 +308,46 @@ class ChannelTalkAPI:
             r = await client.get(url, headers=self.headers)
             r.raise_for_status()
             return r.json()
+
+    async def _hydrate_open_closed(self, chats: list, max_concurrency: int = 8) -> None:
+        """
+        openedAt/closedAt가 비어있는 userChat만 상세 API(/open/v5/user-chats/{id})로 보강.
+        chats 리스트 원소를 in-place 수정.
+        """
+        import asyncio
+        sem = asyncio.Semaphore(max_concurrency)
+
+        async def fetch_and_patch(chat):
+            # 이미 둘 다 있으면 스킵
+            if chat.get("openedAt") is not None and chat.get("closedAt") is not None:
+                return
+            chat_id = chat.get("id") or chat.get("chatId") or chat.get("mainKey", "").replace("userChat-", "")
+            if not chat_id:
+                return
+            async with sem:
+                try:
+                    detail = await self.get_userchat_by_id(str(chat_id))
+                    # ↓ 실제 스키마에 맞게 키 후보 몇 개 대비
+                    opened = (detail.get("openedAt")
+                              or detail.get("openAt")
+                              or (detail.get("state") or {}).get("openedAt"))
+                    closed = (detail.get("closedAt")
+                              or detail.get("closeAt")
+                              or (detail.get("state") or {}).get("closedAt"))
+                    created = detail.get("createdAt", chat.get("createdAt"))
+
+                    if opened is not None: chat["openedAt"] = opened
+                    if closed is not None: chat["closedAt"] = closed
+                    if created is not None: chat["createdAt"] = created
+                except Exception as e:
+                    print(f"[HYDRATE] chatId={chat_id} 상세조회 실패: {e}")
+
+        targets = [c for c in chats if c.get("openedAt") is None or c.get("closedAt") is None]
+        if not targets:
+            return
+
+        print(f"[HYDRATE] openedAt/closedAt 보강 대상: {len(targets)}개 (전체 {len(chats)}개)")
+        await asyncio.gather(*(fetch_and_patch(c) for c in targets))
 
     async def get_messages(self, start_date: str, end_date: str, limit: int = 1000) -> List[Dict]:
         await self._ensure_keys()
@@ -226,32 +445,36 @@ class ChannelTalkAPI:
         return None
 
     async def process_userchat_data(self, data: List[Dict]) -> pd.DataFrame:
+        # (교체) 추출 키 목록
         keep_keys = [
-            "userId", "personId", "mediumType", "workflowId", "tags", "chats", "createdAt", 
-            "firstAskedAt", "operationWaitingTime", "operationAvgReplyTime", 
+            "userId", "personId", "mediumType", "workflowId", "tags", "chats",
+            "createdAt", "firstAskedAt", "openedAt", "closedAt",
+            "operationWaitingTime", "operationAvgReplyTime",
             "operationTotalReplyTime", "operationResolutionTime"
         ]
 
+        # (교체) 변환기
         def convert_time(key, ms):
             if ms is None:
                 return None
             try:
-                if key == "firstAskedAt":
+                if key in {"firstAskedAt", "createdAt", "openedAt", "closedAt"}:
                     if isinstance(ms, str):
                         return pd.to_datetime(ms, errors='coerce')
                     elif isinstance(ms, (int, float)):
-                        return pd.to_datetime(ms, unit='ms')
+                        # UTC(ms) -> KST naive
+                        return pd.to_datetime(ms, unit='ms', utc=True).tz_convert('Asia/Seoul').tz_localize(None)
                     elif isinstance(ms, (pd.Timestamp, datetime)):
-                        return ms
+                        return pd.to_datetime(ms, errors='coerce')
                     else:
                         return pd.NaT
-                else:
+
+                if key in {"operationWaitingTime","operationAvgReplyTime","operationTotalReplyTime","operationResolutionTime"}:
                     td = timedelta(milliseconds=ms)
                     total_seconds = int(td.total_seconds())
-                    hours = total_seconds // 3600
-                    minutes = (total_seconds % 3600) // 60
-                    seconds = total_seconds % 60
-                    return f"{hours:02}:{minutes:02}:{seconds:02}"
+                    h, m, s = total_seconds // 3600, (total_seconds % 3600) // 60, total_seconds % 60
+                    return f"{h:02}:{m:02}:{s:02}"
+                return None
             except Exception:
                 return None
 
@@ -267,7 +490,9 @@ class ChannelTalkAPI:
                 value = item.get(key)
                 if key == "workflowId":
                     value = item.get("source", {}).get("workflow", {}).get("id")
-                elif key in ["firstAskedAt", "operationWaitingTime", "operationAvgReplyTime", "operationTotalReplyTime", "operationResolutionTime"]:
+                elif key in ["firstAskedAt","createdAt","openedAt","closedAt",
+                             "operationWaitingTime","operationAvgReplyTime",
+                             "operationTotalReplyTime","operationResolutionTime"]:
                     value = convert_time(key, value)
                 new_obj[key] = value
 
@@ -280,6 +505,8 @@ class ChannelTalkAPI:
             문의유형_2차 = self.extract_level(tags, "문의유형", 2)
             서비스유형_1차 = self.extract_level(tags, "서비스유형", 1)
             서비스유형_2차 = self.extract_level(tags, "서비스유형", 2)
+            처리유형_1차 = self.extract_level(tags, "처리유형", 1)
+            처리유형_2차 = self.extract_level(tags, "처리유형", 2)
 
             # 1차 분류만 사용 (2차 분류 제거)
             고객유형 = 고객유형_1차
@@ -293,34 +520,45 @@ class ChannelTalkAPI:
                 "고객유형": 고객유형,
                 "문의유형": 문의유형,
                 "서비스유형": 서비스유형,
+                "처리유형": 처리유형_1차,
                 "고객유형_1차": 고객유형_1차,
                 "문의유형_1차": 문의유형_1차,
                 "서비스유형_1차": 서비스유형_1차,
+                "처리유형_1차": 처리유형_1차,
                 "고객유형_2차": 고객유형_2차,
                 "문의유형_2차": 문의유형_2차,
                 "서비스유형_2차": 서비스유형_2차,
+                "처리유형_2차": 처리유형_2차,
                 # userChat id
                 "userChatId": item.get("id") or item.get("chatId") or item.get("mainKey", "").replace("userChat-", "")
             }
             processed_data.append(processed_item)
 
         df = pd.DataFrame(processed_data)
+        
+        # (추가) DF 생성 후 보정
         if "firstAskedAt" in df.columns:
-            df["firstAskedAt"] = pd.to_datetime(df["firstAskedAt"], errors="coerce")
+            df["firstAskedAt"] = pd.to_datetime(df["firstAskedAt"], errors='coerce')
+        for c in ["createdAt","openedAt","closedAt"]:
+            if c in df.columns:
+                df[c] = pd.to_datetime(df[c], errors='coerce')
 
+        # (교체) 필수 컬럼
         required_columns = [
-            "고객유형", "문의유형", "서비스유형",
-            "고객유형_1차", "문의유형_1차", "서비스유형_1차",
-            "고객유형_2차", "문의유형_2차", "서비스유형_2차",
-            "firstAskedAt", "operationWaitingTime",
-            "operationAvgReplyTime", "operationTotalReplyTime",
-            "operationResolutionTime", "userChatId", "userId", "personId"
+            "고객유형","문의유형","서비스유형",
+            "고객유형_1차","문의유형_1차","서비스유형_1차",
+            "고객유형_2차","문의유형_2차","서비스유형_2차",
+            "firstAskedAt","createdAt","openedAt","closedAt",
+            "operationWaitingTime","operationAvgReplyTime",
+            "operationTotalReplyTime","operationResolutionTime",
+            "userChatId","userId","personId"
         ]
         for col in required_columns:
             if col not in df.columns:
                 df[col] = None
 
         return df
+
 
     # ▼ 신규: 메시지 배열에서 CSAT 설문 추출
     def extract_csat_from_messages(self, msgs: List[Dict], allowed_trigger_ids: Optional[set] = None) -> Dict:
@@ -338,23 +576,26 @@ class ChannelTalkAPI:
         person_id = None
 
         def norm_label(label: str) -> Optional[str]:
-            if not isinstance(label, str):
+            s = self._clean_label(label)
+            if not s:
                 return None
-            s = label.strip()
-            # 숫자. 로 시작하는 레이블 → A-n 매핑
-            # 1. 상담원의 친절도..., 2. 문제 해결..., 4. 기능 안정성..., 5. 디자인...
-            if s.startswith("1."): return "A-1"
-            if s.startswith("2."): return "A-2"
-            if s.startswith("4."): return "A-4"
-            if s.startswith("5."): return "A-5"
-            # 3/6 텍스트 응답은 코멘트 키
-            if s.startswith("3."): return "comment_3"
-            if s.startswith("6."): return "comment_6"
-            # 업로드 Excel과 맞추기 위한 백업 라벨
+
+            # 숫자 접두 자동 인식 (예: "3) ..." "6 . ..." 포함)
+            n = self._leading_num(s)
+            if n == 1: return "A-1"
+            if n == 2: return "A-2"
+            if n == 3: return "comment_3"
+            if n == 4: return "A-4"
+            if n == 5: return "A-5"
+            if n == 6: return "comment_6"
+
+            # 백업 규칙(키워드)
             if "친절도" in s: return "A-1"
             if "문제 해결" in s: return "A-2"
+            if "상담 과정" in s or "개선점" in s: return "comment_3"
             if "안정성" in s: return "A-4"
             if "디자인" in s: return "A-5"
+            if "플랫폼에 대해" in s: return "comment_6"
             return None
 
         for m in msgs:
@@ -374,25 +615,56 @@ class ChannelTalkAPI:
             if person_id is None and m.get("personType") == "user":
                 person_id = m.get("personId") or m.get("person", {}).get("id")
 
+            # form 구조 처리
             form = m.get("form")
-            if not form:
-                continue
-            inputs = form.get("inputs") or []
-            submitted_at = form.get("submittedAt")
-            if submitted_at:
-                latest_submit_ts = max(latest_submit_ts or submitted_at, submitted_at)
-            for inp in inputs:
-                label = norm_label(inp.get("label"))
-                if not label:
-                    continue
-                val = inp.get("value")
-                if label.startswith("A-"):
-                    try:
-                        result[label] = int(val) if val is not None else None
-                    except Exception:
-                        result[label] = None
-                elif label.startswith("comment_"):
-                    result[label] = val if isinstance(val, str) else None
+            if form:
+                inputs = form.get("inputs") or []
+                submitted_at = form.get("submittedAt")
+                if submitted_at:
+                    latest_submit_ts = max(latest_submit_ts or submitted_at, submitted_at)
+
+                # 👉 워크플로우 위치로 문항 그룹 추론 (라벨이 없거나 애매할 때 사용)
+                wf = (m.get("workflow") or {})
+                action_idx = wf.get("actionIndex")
+                # actionIndex: 1(1~3문항), 2(4~6문항) 패턴 대응
+                in_first_group = (action_idx in (0, 1))   # 1~3
+                in_second_group = (action_idx in (2, 3))  # 4~6
+
+                for inp in inputs:
+                    original_label = inp.get("label")
+                    label = norm_label(original_label)
+                    val = inp.get("value")
+                    bk = (inp.get("bindingKey") or "").strip()
+
+                    # === Fallback 1: 라벨 미해석 & 코멘트 필드이면 actionIndex로 comment_3/6 강제 매핑
+                    if not label and bk == "userChat.profile.csatComment":
+                        if in_first_group:
+                            label = "comment_3"
+                        elif in_second_group:
+                            label = "comment_6"
+
+                    # === Fallback 2: 라벨 미해석 & singleSelect(점수)인데 그룹으로 추정 가능
+                    if not label and inp.get("type") == "singleSelect" and bk == "userChat.profile.csat":
+                        # 같은 메시지 블록 내 점수 항목의 순서로 1/2/4/5를 추정하기엔 위험 → 점수는 스킵(기존 로직 유지)
+                        pass
+
+                    # 디버깅: 원본 레이블과 매핑된 레이블 출력
+                    if original_label and val:
+                        print(f"[CSAT_DEBUG] 원본: '{original_label}' → 매핑: '{label}' → 값: '{val}'")
+                    
+                    if not label:
+                        continue
+                        
+                    if label.startswith("A-"):
+                        try:
+                            result[label] = int(val) if val is not None else None
+                        except Exception:
+                            result[label] = None
+                    elif label.startswith("comment_"):
+                        if label not in result:
+                            result[label] = []
+                        if isinstance(val, str) and val.strip():
+                            result[label].append(val.strip())
 
         if latest_submit_ts:
             try:
@@ -406,7 +678,15 @@ class ChannelTalkAPI:
         # personId 추가
         if person_id:
             result["personId"] = person_id
-            
+        
+        # comment 배열을 문자열로 변환 (여러 개인 경우 첫 번째 것만 사용)
+        for key in ["comment_3", "comment_6"]:
+            if key in result:
+                if isinstance(result[key], list):
+                    result[key] = result[key][0].strip() if result[key] else None
+                elif isinstance(result[key], str):
+                    result[key] = result[key].strip() or None
+        
         return result
 
     # ▼ 신규: CSAT 데이터가 있는 userChat만 필터링
@@ -561,6 +841,7 @@ async def get_cached_data(start_date: str, end_date: str, refresh_mode: str = "c
                 userchats = await channel_api.get_userchats(start, end)
                 if userchats:
                     df = await channel_api.process_userchat_data(userchats)
+                    df = attach_resolution_fallback(df)
                     meta = {"month": month, "range": [start, end], "api_fetch": True}
                     server_cache.save_data(f"userchats_{month}", df, meta)
                     all_data.append(df)
@@ -591,6 +872,7 @@ async def get_cached_data(start_date: str, end_date: str, refresh_mode: str = "c
                             combined_df = pd.concat([df, new_df], ignore_index=True)
                             # 중복 제거 (userChatId 기준 - 각 문의마다 고유)
                             combined_df = combined_df.drop_duplicates(subset=['userChatId'], keep='first')
+                            combined_df = attach_resolution_fallback(combined_df)
                             # 업데이트된 캐시 저장
                             meta = {"month": month, "range": [start, end], "api_fetch": True, "updated": True}
                             server_cache.save_data(f"userchats_{month}", combined_df, meta)
@@ -619,6 +901,7 @@ async def get_cached_data(start_date: str, end_date: str, refresh_mode: str = "c
                     userchats = await channel_api.get_userchats(start, end)
                     if userchats:
                         df = await channel_api.process_userchat_data(userchats)
+                        df = attach_resolution_fallback(df)
                         meta = {"month": month, "range": [start, end], "api_fetch": True}
                         server_cache.save_data(f"userchats_{month}", df, meta)
                         all_data.append(df)
@@ -655,6 +938,14 @@ async def get_cached_data(start_date: str, end_date: str, refresh_mode: str = "c
     except Exception as e:
         print(f"[ERROR] firstAskedAt 변환 실패: {type(e).__name__}: {e}")
         return pd.DataFrame()
+    
+    # firstAskedAt 처리 아래에 이어서
+    for col in ["createdAt","openedAt","closedAt"]:
+        if col in combined.columns:
+            try:
+                combined[col] = pd.to_datetime(combined[col], errors='coerce')
+            except Exception:
+                pass
     
     print(f"[DEBUG] 중복 제거 시작")
     try:
@@ -701,15 +992,6 @@ async def get_cached_data(start_date: str, end_date: str, refresh_mode: str = "c
         print(f"[ERROR] 날짜 필터링 실패: {type(e).__name__}: {e}")
         return pd.DataFrame()
     
-    # 🔧 refresh_mode="refresh"일 때만 CSAT 캐시도 함께 갱신
-    if refresh_mode == "refresh":
-        print(f"[REFRESH] CSAT 캐시도 함께 갱신 시작...")
-        try:
-            csat_count = await build_and_cache_csat_rows(start_date, end_date)
-            print(f"[REFRESH] CSAT 캐시 갱신 완료: {csat_count} rows")
-        except Exception as e:
-            print(f"[REFRESH] CSAT 캐시 갱신 실패: {e}")
-    
     return result
 
 # === 신규: CSAT 캐시 빌드 ===
@@ -719,102 +1001,121 @@ async def build_and_cache_csat_rows(start_date: str, end_date: str) -> int:
     각 userChat의 messages를 조회 → CSAT 설문 파싱 → 월별 csat 캐시 저장.
     반환: 저장된 row 총 개수
     """
-    # 1) 사용자 문의 데이터 확보(캐시 기준, API 호출 없이 우선 시도)
-    user_df = await get_cached_data(start_date, end_date, refresh_mode="cache")
-    if user_df is None or user_df.empty:
-        # 그래도 없다면, 이 함수는 새로고침 경로에서만 호출하도록 설계했으니
-        # 강제 새로고침(=API 호출)로 한번 채워준다.
-        user_df = await get_cached_data(start_date, end_date, refresh_mode="refresh")
+    # 중복 실행 가드
+    if csat_build_lock.locked():
+        print("[CSAT] build already running — skip this trigger")
+        return 0
+    
+    async with csat_build_lock:
+        # 1) 사용자 문의 데이터 확보(캐시 기준, API 호출 없이 우선 시도)
+        user_df = await get_cached_data(start_date, end_date, refresh_mode="cache")
         if user_df is None or user_df.empty:
+            # 그래도 없다면, 이 함수는 새로고침 경로에서만 호출하도록 설계했으니
+            # 강제 새로고침(=API 호출)로 한번 채워준다.
+            user_df = await get_cached_data(start_date, end_date, refresh_mode="refresh")
+            if user_df is None or user_df.empty:
+                return 0
+
+        # 2) CSAT 데이터가 있는 userChat만 필터링 (triggerId: 768201)
+        print(f"[CSAT] 전체 userChat 수: {len(user_df)}")
+        
+        # userChat 레벨에서는 workflowId가 아니라 triggerId를 확인해야 함
+        # 하지만 userChat 자체에는 triggerId가 없고, 메시지 레벨에서만 확인 가능
+        # 따라서 모든 userChat을 대상으로 하고, 메시지 레벨에서 필터링
+        csat_df = user_df.copy()
+        print(f"[CSAT] 전체 userChat 대상 (메시지 레벨에서 triggerId 필터링)")
+
+        # 3) 최근부터 역순으로 정렬 (효율적인 검색을 위해)
+        csat_df = csat_df.sort_values("firstAskedAt", ascending=False)
+        
+        # 4) chatId 목록과 userId/firstAskedAt 매핑
+        need_cols = ["userChatId", "userId", "firstAskedAt"]
+        for c in need_cols:
+            if c not in csat_df.columns:
+                csat_df[c] = None
+        sub = csat_df[need_cols].dropna(subset=["userChatId"]).drop_duplicates()
+
+        # 5) 각 chatId의 메시지 조회 & CSAT 파싱
+        rows = []
+        total_n = len(sub)
+        for i, (_, row) in enumerate(sub.iterrows(), start=1):
+            chat_id = str(row["userChatId"])
+            user_id = str(row["userId"]) if pd.notna(row["userId"]) else None
+            asked_at = pd.to_datetime(row["firstAskedAt"], errors="coerce")
+            if not chat_id or pd.isna(asked_at):
+                continue
+
+            try:
+                print(f"[CSAT] 처리 중: {chat_id} ({i}/{total_n})")
+                msgs = await channel_api.get_messages_by_chat(chat_id, limit=500, sort_order="desc")
+                # ✅ CSAT 설문 워크플로우(768201)만 파싱 (잡음 제거)
+                cs = channel_api.extract_csat_from_messages(msgs, allowed_trigger_ids={"768201"})
+                if not cs:
+                    print(f"[CSAT] {chat_id}: CSAT 데이터 없음")
+                    continue
+                print(f"[CSAT] {chat_id}: CSAT 데이터 발견 - {list(cs.keys())}")
+                
+                # 디버깅: 실제 메시지에서 triggerId 확인
+                for m in msgs:
+                    log = m.get("log") or {}
+                    trigger_id = log.get("triggerId")
+                    workflow_id = (m.get("workflow") or {}).get("id")
+                    if trigger_id or workflow_id:
+                        print(f"[CSAT] {chat_id}: triggerId={trigger_id}, workflowId={workflow_id}")
+                        break
+                
+                rows.append({
+                    "firstAskedAt": asked_at,
+                    "userId": user_id,
+                    "userChatId": chat_id,
+                    "personId": cs.get("personId"),  # personId 추가
+                    "A-1": cs.get("A-1"),
+                    "A-2": cs.get("A-2"),
+                    "comment_3": cs.get("comment_3"),
+                    "A-4": cs.get("A-4"),
+                    "A-5": cs.get("A-5"),
+                    "comment_6": cs.get("comment_6"),
+                    "csatSubmittedAt": cs.get("csatSubmittedAt"),
+                    "csatDate": pd.to_datetime(cs.get("csatSubmittedAt"), errors="coerce")  # ✅ 집계 기준
+                })
+            except Exception as e:
+                print(f"[CSAT] chatId={chat_id} 파싱 실패: {e}")
+                continue
+
+        if not rows:
+            print("[CSAT] 파싱된 CSAT 데이터가 없습니다.")
             return 0
 
-    # 2) CSAT 데이터가 있는 userChat만 필터링 (triggerId: 768201)
-    print(f"[CSAT] 전체 userChat 수: {len(user_df)}")
-    
-    # userChat 레벨에서는 workflowId가 아니라 triggerId를 확인해야 함
-    # 하지만 userChat 자체에는 triggerId가 없고, 메시지 레벨에서만 확인 가능
-    # 따라서 모든 userChat을 대상으로 하고, 메시지 레벨에서 필터링
-    csat_df = user_df.copy()
-    print(f"[CSAT] 전체 userChat 대상 (메시지 레벨에서 triggerId 필터링)")
+        print(f"[CSAT] 총 {len(rows)}개의 CSAT 응답 파싱 완료")
 
-    # 3) 최근부터 역순으로 정렬 (효율적인 검색을 위해)
-    csat_df = csat_df.sort_values("firstAskedAt", ascending=False)
-    
-    # 4) chatId 목록과 userId/firstAskedAt 매핑
-    need_cols = ["userChatId", "userId", "firstAskedAt"]
-    for c in need_cols:
-        if c not in csat_df.columns:
-            csat_df[c] = None
-    sub = csat_df[need_cols].dropna(subset=["userChatId"]).drop_duplicates()
+        # 6) 월별로 쪼개서 저장 (userchats 캐시와 동일 정책)
+        csat_df = pd.DataFrame(rows)
 
-    # 5) 각 chatId의 메시지 조회 & CSAT 파싱
-    rows = []
-    processed_count = 0
-    for _, row in sub.iterrows():
-        chat_id = str(row["userChatId"])
-        user_id = str(row["userId"]) if pd.notna(row["userId"]) else None
-        asked_at = pd.to_datetime(row["firstAskedAt"], errors="coerce")
-        if not chat_id or pd.isna(asked_at):
-            continue
+        # CSAT 캐시 레코드 컬럼 보장(디버그 편의)
+        need = ["firstAskedAt","userId","userChatId","comment_3","comment_6","A-1","A-2","A-4","A-5","csatSubmittedAt","personId"]
+        # 보장
+        for c in ["firstAskedAt","userId","userChatId","comment_3","comment_6","A-1","A-2","A-4","A-5","csatSubmittedAt","personId","csatDate"]:
+            if c not in csat_df.columns:
+                csat_df[c] = None
+        
+        csat_df["firstAskedAt"] = pd.to_datetime(csat_df["firstAskedAt"], errors="coerce")
+        # ✅ 집계/버킷 기준: 제출일
+        csat_df["csatDate"] = pd.to_datetime(csat_df["csatDate"], errors="coerce")
 
-        try:
-            print(f"[CSAT] 처리 중: {chat_id} ({processed_count + 1}/{len(sub)})")
-            msgs = await channel_api.get_messages_by_chat(chat_id, limit=500, sort_order="desc")
-            cs = channel_api.extract_csat_from_messages(msgs, allowed_trigger_ids={'768201'})
-            if not cs:
-                print(f"[CSAT] {chat_id}: CSAT 데이터 없음")
-                continue
-            print(f"[CSAT] {chat_id}: CSAT 데이터 발견 - {list(cs.keys())}")
-            
-            rows.append({
-                "firstAskedAt": asked_at,
-                "userId": user_id,
-                "userChatId": chat_id,
-                "personId": cs.get("personId"),  # personId 추가
-                "A-1": cs.get("A-1"),
-                "A-2": cs.get("A-2"),
-                "comment_3": cs.get("comment_3"),
-                "A-4": cs.get("A-4"),
-                "A-5": cs.get("A-5"),
-                "comment_6": cs.get("comment_6"),
-                "csatSubmittedAt": cs.get("csatSubmittedAt")
-            })
-            processed_count += 1
-        except Exception as e:
-            print(f"[CSAT] chatId={chat_id} 파싱 실패: {e}")
-            continue
-
-    if not rows:
-        print("[CSAT] 파싱된 CSAT 데이터가 없습니다.")
-        return 0
-
-    print(f"[CSAT] 총 {len(rows)}개의 CSAT 응답 파싱 완료")
-
-    # 6) 월별로 쪼개서 저장 (userchats 캐시와 동일 정책)
-    csat_df = pd.DataFrame(rows)
-    
-    # CSAT 캐시 레코드 컬럼 보장(디버그 편의)
-    need = ["firstAskedAt","userId","userChatId","comment_3","comment_6","A-1","A-2","A-4","A-5","csatSubmittedAt","personId"]
-    for c in need:
-        if c not in csat_df.columns:
-            csat_df[c] = None
-    
-    csat_df["firstAskedAt"] = pd.to_datetime(csat_df["firstAskedAt"], errors="coerce")
-
-    # 7) 월별로 쪼개서 저장
-    csat_df["month"] = csat_df["firstAskedAt"].dt.to_period("M").astype(str)
-    total_saved = 0
-    for month, mdf in csat_df.groupby("month"):
-        mdf = mdf.drop(columns=["month"])
-        key = f"csat_{month}"
-        meta = {"month": month, "range": [start_date, end_date], "api_fetch": True, "kind": "csat"}
-        ok = server_cache.save_data(key, mdf, meta)
-        if ok:
-            total_saved += len(mdf)
-            print(f"[CSAT] {month} 저장 완료: {len(mdf)} rows")
-    
-    print(f"[CSAT] 총 {total_saved} rows 저장 완료")
-    return total_saved
+        # 7) 월별로 쪼개서 저장
+        csat_df["month"] = csat_df["csatDate"].dt.to_period("M").astype(str)
+        total_saved = 0
+        for month, mdf in csat_df.groupby("month"):
+            mdf = mdf.drop(columns=["month"])
+            key = f"csat_{month}"
+            meta = {"month": month, "range": [start_date, end_date], "api_fetch": True, "kind": "csat"}
+            ok = server_cache.save_data(key, mdf, meta)
+            if ok:
+                total_saved += len(mdf)
+                print(f"[CSAT] {month} 저장 완료: {len(mdf)} rows")
+        
+        print(f"[CSAT] 총 {total_saved} rows 저장 완료")
+        return total_saved
 
 # === 신규: csat_raw.pkl에서 직접 로드 (triggerId 필터링) ===
 def load_csat_raw_data() -> Optional[pd.DataFrame]:
@@ -899,12 +1200,40 @@ def load_csat_rows_from_cache(start_date: str, end_date: str) -> pd.DataFrame:
             print(f"[CSAT] 날짜 필터링 실패: {e}")
             return pd.DataFrame()
     
-    # 기간 필터 (이미 위에서 처리했지만 안전장치)
-    if 'firstAskedAt' in out.columns:
-        out["firstAskedAt"] = pd.to_datetime(out["firstAskedAt"], errors="coerce")
+    # ✅ 기간 필터: 제출일(우선) → 제출일이 없으면 firstAskedAt
+    # ✅ tz-aware(예: +09:00) → Asia/Seoul로 변환 후 naive 비교
+    date_candidates = [c for c in ["csatDate", "csatSubmittedAt", "submittedAt", "firstAskedAt"] if c in out.columns]
+    date_key = date_candidates[0] if date_candidates else None
+
+    def _to_kst_naive_series(s):
+        dt = pd.to_datetime(s, errors="coerce")
+        # tz-aware면 KST로 변환 후 tz 제거
+        try:
+            if getattr(dt.dt, "tz", None) is not None:
+                dt = dt.dt.tz_convert("Asia/Seoul").dt.tz_localize(None)
+        except Exception:
+            # 일부 케이스는 tz_localize로만 들어오는 경우가 있어 보조 처리
+            try:
+                dt = pd.to_datetime(s, errors="coerce", utc=True).dt.tz_convert("Asia/Seoul").dt.tz_localize(None)
+            except Exception:
+                pass
+        return dt
+
+    if date_key is not None:
+        out["_csat_dt"] = _to_kst_naive_series(out[date_key])
+
+        # 모든 값이 NaT면 firstAskedAt로 폴백 시도
+        if out["_csat_dt"].notna().sum() == 0 and "firstAskedAt" in out.columns:
+            out["_csat_dt"] = _to_kst_naive_series(out["firstAskedAt"])
+
         s = pd.to_datetime(start_date)
         e = pd.to_datetime(end_date) + pd.Timedelta(days=1) - pd.Timedelta(milliseconds=1)
-        out = out[(out["firstAskedAt"].notna()) & (out["firstAskedAt"] >= s) & (out["firstAskedAt"] <= e)].reset_index(drop=True)
+
+        mask = out["_csat_dt"].notna() & (out["_csat_dt"] >= s) & (out["_csat_dt"] <= e)
+        out = out.loc[mask].drop(columns=["_csat_dt"]).reset_index(drop=True)
+    else:
+        # 날짜 키가 전혀 없으면 필터를 건너뜀(텅 비는 것 방지)
+        print("[CSAT] 경고: 날짜 컬럼을 찾지 못해 기간 필터를 건너뜁니다.")
     
     return out
 
@@ -993,11 +1322,11 @@ def enrich_csat_with_user_types(csat_df: pd.DataFrame, chats_df: pd.DataFrame) -
             how="inner",
         )
 
-        # 중복 CSAT 응답 정리: 같은 userId에 대해 csatSubmittedAt 최신 1건만 사용
-        if "csatSubmittedAt" in merged.columns:
+        # 중복 CSAT 응답 정리: userChatId+csatSubmittedAt 조합으로 중복 제거
+        if "csatSubmittedAt" in merged.columns and "userChatId" in merged.columns:
             merged = (merged
-                      .sort_values(["userId", "csatSubmittedAt"])
-                      .drop_duplicates(subset=["userId"], keep="last"))
+                      .sort_values(["userChatId", "csatSubmittedAt"])
+                      .drop_duplicates(subset=["userChatId", "csatSubmittedAt"], keep="last"))
         
         # 매칭된 건수 확인
         matched_count = len(merged)

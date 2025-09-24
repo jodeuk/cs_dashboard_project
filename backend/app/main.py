@@ -1,11 +1,13 @@
 import os
 import re
 import base64
-from fastapi import FastAPI, Query, HTTPException
+import asyncio
+import math
+import numpy as np
+from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, Header, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import pandas as pd
-import numpy as np
 from datetime import datetime
 from typing import Optional
 import io
@@ -21,6 +23,31 @@ from app.cs_utils import (
     get_filtered_df
 )
 
+# ---- 유틸 함수 ----
+def _iso_millis(series):
+    s = pd.to_datetime(series, errors="coerce")
+    return s.dt.strftime("%Y-%m-%dT%H:%M:%S.%f").str.slice(0, 23)
+
+# ---- 필터 유틸 ----
+def _norm(v: Optional[str]) -> str:
+    return (str(v or "").strip().lower())
+
+def _parse_values(val) -> list[str]:
+    """
+    쿼리로 들어온 값(단일/CSV/배열)을 ['a','b'] 형태로 표준화.
+    '전체' 또는 빈값이면 [] 반환하여 '필터 미적용' 의미.
+    """
+    if val is None:
+        return []
+    if isinstance(val, (list, tuple)):
+        candidates = val
+    else:
+        # "a,b , c" → ["a","b","c"]
+        candidates = [x for x in str(val).split(",")]
+    out = [x.strip() for x in candidates if x is not None and str(x).strip()]
+    out = [x for x in out if _norm(x) != _norm("전체")]
+    return out
+
 # ---- 1. FastAPI 기본 셋업 ----
 app = FastAPI(title="CS Dashboard API", version="1.1.0")
 
@@ -29,16 +56,30 @@ app = FastAPI(title="CS Dashboard API", version="1.1.0")
 # from fastapi.middleware.timeout import TimeoutMiddleware
 # app.add_middleware(TimeoutMiddleware, timeout=300)  # 5분 타임아웃
 
+# CORS 설정 강화 - 정확한 오리진 나열
+ALLOWED_ORIGINS = [
+    "http://61.107.201.48:8080",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+    "http://localhost:3000",  # React 개발 서버
+    "http://127.0.0.1:3000",  # React 개발 서버
+    "http://localhost:3001",  # 추가 포트
+    "http://127.0.0.1:3001",  # 추가 포트
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=ALLOWED_ORIGINS,   # "*" 대신 명시적 오리진 나열
+    allow_credentials=False,         # 쿠키 안 쓰면 False가 안전
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],            # 에러 응답에도 헤더 노출
+    max_age=86400,                   # 24시간 캐시
 )
 
 # ---- 2. 설정 ----
 FONT_PATH = os.environ.get("FONT_PATH", "/usr/share/fonts/truetype/nanum/NanumGothic.ttf")
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "supersecret")  # 기본값 supersecret
 
 # ---- 2-1. 날짜 제한 함수 ----
 def limit_end_date(end_date_str: str) -> str:
@@ -46,6 +87,30 @@ def limit_end_date(end_date_str: str) -> str:
     if end_date_str > today_str:
         return today_str
     return end_date_str
+
+# ---- 2-2. 관리자 토큰 검증 ----
+def admin_guard(x_admin_token: str = Header(None)):
+    expected = os.getenv("ADMIN_TOKEN")
+    if not expected or x_admin_token != expected:
+        raise HTTPException(status_code=403, detail="관리자 권한이 필요합니다.")
+    return True
+
+# ---- 2-3. NaN/Inf sanitize 유틸 ----
+def _sanitize_json(obj):
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    try:
+        # numpy float 케이스
+        if isinstance(obj, (np.floating,)):
+            val = float(obj)
+            return val if math.isfinite(val) else None
+    except Exception:
+        pass
+    if isinstance(obj, dict):
+        return {k: _sanitize_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_json(v) for v in obj]
+    return obj
 
 # ---- 2-1. Pydantic 모델 ----
 # CSAT 업로드 관련 모델 제거됨
@@ -107,6 +172,29 @@ async def clear_cache():
         raise HTTPException(status_code=500, detail="캐시 삭제 실패")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"캐시 삭제 실패: {str(e)}")
+
+# ---- 4-1. 전구간 재수집 작업 본체 ----
+async def _rebuild_all_cache_task(start: str, end: str):
+    """관리자 전용: 전체 캐시 삭제 후 전구간 재수집"""
+    try:
+        # 1) 전체 캐시 삭제
+        ok = server_cache.clear_all_cache()
+        print(f"[ADMIN] clear_all_cache: {ok}")
+
+        # 2) 전구간 재수집 (월별 저장 + openedAt/closedAt 포함 + CSAT 캐시도 함께)
+        #    get_cached_data(refresh_mode='refresh')는 월별로 API 수집하며 캐시에 저장함
+        df = await get_cached_data(start, end, refresh_mode="refresh")
+        print(f"[ADMIN] userchats rebuild finished. rows={len(df)}")
+
+        # 3) CSAT 캐시도 함께 재수집
+        csat_saved = await build_and_cache_csat_rows(start, end)
+        print(f"[ADMIN] CSAT rebuild finished. rows={csat_saved}")
+
+        print(f"[ADMIN] 전체 재빌드 완료: userchats={len(df)}, csat={csat_saved}")
+        return {"userchats_rows": len(df), "csat_rows": csat_saved}
+    except Exception as e:
+        print(f"[ADMIN] 재빌드 작업 실패: {e}")
+        raise e
 
 # === 기존: 캐시 새로고침 (API 호출 없이 캐시만 재로딩) + 확장: include_csat 파라미터 ===
 @app.get("/api/cache/refresh")
@@ -191,104 +279,88 @@ async def filter_options(
     문의유형: str = Query("전체"),
     서비스유형: str = Query("전체")
 ):
+    """
+    1차/2차 옵션을 캐시에서만 생성.
+    - 1차: *_1차 컬럼 사용
+    - 2차: 선택된 1차로 DF를 먼저 좁힌 뒤 *_2차 고유값 반환
+    """
     try:
-        print(f"[FILTER_OPTIONS] API 호출: start={start}, end={end}, refresh_mode={refresh_mode}")
-        
-        # 날짜 필터링 없이 전체 캐시 데이터 사용 (필터 옵션용)
+        # 기간과 무관하게, 옵션은 전체 캐시 기반으로 생성
         df = await get_cached_data("2025-04-01", "2025-12-31", refresh_mode="cache")
-        print(f"[FILTER_OPTIONS] get_cached_data 결과: {len(df)} rows, 컬럼: {list(df.columns)}")
-        
-        if df.empty:
-            print("[FILTER_OPTIONS] 데이터가 비어있음 - 기본값 반환")
+        if df is None or df.empty:
             return {
                 "고객유형": ["전체"], "문의유형": ["전체"], "서비스유형": ["전체"],
-                "문의유형_2차": ["전체"], "서비스유형_2차": ["전체"],
+                "고객유형_2차": ["전체"], "문의유형_2차": ["전체"], "서비스유형_2차": ["전체"],
             }
 
-        def unique_nonempty(col):
-            if col not in df.columns: return []
-            vals = df[col].dropna()
-            vals = [v for v in vals if v and str(v).strip() != '']
-            return sorted(set(vals))
-            
-        def unique_nonempty_from_df(dataframe, col):
-            if col not in dataframe.columns: return []
-            vals = dataframe[col].dropna()
-            vals = [v for v in vals if v and str(v).strip() != '']
-            return sorted(set(vals))
+        # 안전 정규화 유틸
+        def norm_series(s):
+            return (s.astype(str)
+                     .str.strip()
+                     .replace({"None": "", "nan": ""}))
 
-        def extract_primary(col):
-            if col not in df.columns: 
-                print(f"[FILTER] 컬럼 '{col}' 없음")
-                return []
-            vals = df[col].dropna()
-            print(f"[FILTER] 컬럼 '{col}' 값들: {vals.head(10).tolist()}")
-            s = set()
-            for v in vals:
-                if v and str(v).strip() != '':
-                    txt = str(v)
-                    # '/'가 있으면 첫 번째 값, 없으면 전체 값
-                    primary = txt.split('/')[0].strip() if '/' in txt else txt.strip()
-                    s.add(primary)
-            result = sorted(s)
-            print(f"[FILTER] 컬럼 '{col}' 1차 분류 결과: {result}")
-            return result
-
-        # 기본 1차 분류들
-        result = {
-            "고객유형": ["전체"] + extract_primary("고객유형"),
-            "문의유형": ["전체"] + extract_primary("문의유형"),
-            "서비스유형": ["전체"] + extract_primary("서비스유형"),
+        # 실제 사용할 컬럼 매핑 (cs_utils.process_userchat_data에서 생성됨)
+        COLS = {
+            "고객유형": ("고객유형_1차", "고객유형_2차"),
+            "문의유형": ("문의유형_1차", "문의유형_2차"),
+            "서비스유형": ("서비스유형_1차", "서비스유형_2차"),
         }
-        
-        # 2차 분류는 선택된 1차 분류에 따라 필터링
-        if 고객유형 != "전체":
-            # 선택된 고객유형의 세부 분류만
-            고객유형_리스트 = [v.strip() for v in 고객유형.split(',') if v.strip()]
-            print(f"[FILTER_OPTIONS] 고객유형 필터링: {고객유형_리스트}")
-            if 고객유형_리스트:
-                filtered_df = df[df["고객유형"].isin(고객유형_리스트)]
-                print(f"[FILTER_OPTIONS] 필터링된 데이터: {len(filtered_df)} rows")
-                고객유형_2차_options = ["전체"] + unique_nonempty_from_df(filtered_df, "고객유형_2차")
-                print(f"[FILTER_OPTIONS] 고객유형_2차 옵션: {고객유형_2차_options}")
-            else:
-                고객유형_2차_options = ["전체"]
-        else:
-            고객유형_2차_options = ["전체"]
-            
-        if 문의유형 != "전체":
-            # 선택된 문의유형의 세부 분류만
-            문의유형_리스트 = [v.strip() for v in 문의유형.split(',') if v.strip()]
-            if 문의유형_리스트:
-                filtered_df = df[df["문의유형"].isin(문의유형_리스트)]
-                문의유형_2차_options = ["전체"] + unique_nonempty_from_df(filtered_df, "문의유형_2차")
-            else:
-                문의유형_2차_options = ["전체"]
-        else:
-            문의유형_2차_options = ["전체"]
-            
-        if 서비스유형 != "전체":
-            # 선택된 서비스유형의 세부 분류만
-            서비스유형_리스트 = [v.strip() for v in 서비스유형.split(',') if v.strip()]
-            if 서비스유형_리스트:
-                filtered_df = df[df["서비스유형"].isin(서비스유형_리스트)]
-                서비스유형_2차_options = ["전체"] + unique_nonempty_from_df(filtered_df, "서비스유형_2차")
-            else:
-                서비스유형_2차_options = ["전체"]
-        else:
-            서비스유형_2차_options = ["전체"]
-        
+
+        # 없으면 만들어두기
+        for p, (c1, c2) in COLS.items():
+            if c1 not in df.columns: df[c1] = None
+            if c2 not in df.columns: df[c2] = None
+            df[c1] = norm_series(df[c1])
+            df[c2] = norm_series(df[c2])
+
+        # 1차 옵션 뽑기
+        def primary_opts(col1):
+            vals = df[col1].dropna()
+            vals = [v for v in vals if v]
+            return ["전체"] + sorted(set(vals))
+
+        # 2차 옵션 뽑기
+        def secondary_opts(col2):
+            vals = df[col2].dropna()
+            vals = [v for v in vals if v]
+            return ["전체"] + sorted(set(vals))
+
+        result = {
+            "고객유형": primary_opts(COLS["고객유형"][0]),
+            "문의유형": primary_opts(COLS["문의유형"][0]),
+            "서비스유형": primary_opts(COLS["서비스유형"][0]),
+            # 2차 풀리스트도 유지
+            "고객유형_2차": secondary_opts(COLS["고객유형"][1]),
+            "문의유형_2차": secondary_opts(COLS["문의유형"][1]),
+            "서비스유형_2차": secondary_opts(COLS["서비스유형"][1]),
+        }
+
+        # ✅ [추가] subtype_maps 통합 생성
+        def _build_map(df, p, c):
+            return (
+                df[[p, c]].dropna()
+                  .groupby(p)[c].unique()
+                  .apply(lambda xs: sorted(set([x for x in xs.tolist() if str(x).strip()])))
+                  .to_dict()
+            )
+
+        subtype_maps = {
+            "inquiry":  {k: ['전체'] + v for k, v in _build_map(df, '문의유형_1차',  '문의유형_2차').items()},
+            "service":  {k: ['전체'] + v for k, v in _build_map(df, '서비스유형_1차',  '서비스유형_2차').items()},
+            "customer": {k: ['전체'] + v for k, v in _build_map(df, '고객유형_1차', '고객유형_2차').items()},
+        }
+
         result.update({
-            "고객유형_2차": 고객유형_2차_options,
-            "문의유형_2차": 문의유형_2차_options,
-            "서비스유형_2차": 서비스유형_2차_options,
+            "subtype_maps": subtype_maps,  # [ADD] 통합 맵
         })
-        
+
         return result
-    except Exception as e:
+
+    except Exception:
+        # 문제가 나도 UI가 깨지지 않도록 기본값 반환
         return {
             "고객유형": ["전체"], "문의유형": ["전체"], "서비스유형": ["전체"],
-            "문의유형_2차": ["전체"], "서비스유형_2차": ["전체"],
+            "고객유형_2차": ["전체"], "문의유형_2차": ["전체"], "서비스유형_2차": ["전체"],
         }
 
 # 5-2. 기간 상세(프론트 집계용)
@@ -305,7 +377,16 @@ async def userchats(start: str = Query(...), end: str = Query(...), force_refres
         s = pd.to_datetime(start)
         e = pd.to_datetime(end)
         filtered = df[(df["firstAskedAt"] >= s) & (df["firstAskedAt"] <= e)].copy()
-        return filtered.to_dict(orient="records")
+        
+        # filtered 만들고 나서
+        for col in ["firstAskedAt","createdAt","openedAt","closedAt"]:
+            if col in filtered.columns:
+                filtered.loc[:, col] = _iso_millis(filtered[col])
+        
+        # NaN/Inf 값 제거
+        filtered = filtered.replace([np.inf, -np.inf], np.nan)
+        data_dict = filtered.to_dict(orient="records")
+        return _sanitize_json(data_dict)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"캐시 데이터 조회 실패: {str(e)}")
 
@@ -320,7 +401,8 @@ async def period_data(
     문의유형: str = Query("전체"),
     문의유형_2차: str = Query("전체"),
     서비스유형: str = Query("전체"),
-    서비스유형_2차: str = Query("전체")
+    서비스유형_2차: str = Query("전체"),
+    request: Request = None
 ):
     """
     프론트엔드 호환성을 위한 /api/period-data 엔드포인트
@@ -340,39 +422,89 @@ async def period_data(
         if df.empty:
             return []
         
+        # ---- (1) 프론트 영문 키 alias도 수용 (없는 값이면 무시)
+        # inquiryType, serviceType, customerType (+ Sub)
+        if request is not None:
+            qp = request.query_params
+            # parent
+            if _norm(문의유형) == _norm("전체"):
+                문의유형 = qp.get("inquiryType") or qp.get("inquiryTypes") or 문의유형
+            if _norm(서비스유형) == _norm("전체"):
+                서비스유형 = qp.get("serviceType") or qp.get("serviceTypes") or 서비스유형
+            if _norm(고객유형)   == _norm("전체"):
+                고객유형   = qp.get("customerType") or qp.get("customerTypes") or 고객유형
+            # child
+            if _norm(문의유형_2차) == _norm("전체"):
+                문의유형_2차 = qp.get("inquirySubtype") or qp.get("inquirySubtypes") or 문의유형_2차
+            if _norm(서비스유형_2차) == _norm("전체"):
+                서비스유형_2차 = qp.get("serviceSubtype") or qp.get("serviceSubtypes") or 서비스유형_2차
+            if _norm(고객유형_2차) == _norm("전체"):
+                고객유형_2차 = qp.get("customerSubtype") or qp.get("customerSubtypes") or 고객유형_2차
+
         print(f"[PERIOD] params start={start} end={end} refresh_mode={refresh_mode} "
               f"고객유형={고객유형} 문의유형={문의유형} 서비스유형={서비스유형} 문의유형_2차={문의유형_2차} 서비스유형_2차={서비스유형_2차}")
-        print(f"[PERIOD] date-filtered rows(before type filters): {len(df)}")
+        original_len = len(df)
+        print(f"[PERIOD] date-filtered rows(before type filters): {original_len}")
 
-        # 모든 유형 필터가 '전체'면 바로 리턴 (이중필터로 0건 방지)
-        if (고객유형 == "전체" and 문의유형 == "전체" and 서비스유형 == "전체"
-            and 문의유형_2차 == "전체" and 서비스유형_2차 == "전체"):
-            print("[PERIOD] all type filters == '전체' → skip type filtering")
-            return df.to_dict(orient="records")
+        # ---- (2) 실제 DF 컬럼 매핑: 1차/2차는 *_1차 / *_2차 로 통일
+        COLS = {
+            "문의유형":   ("문의유형_1차", "문의유형_2차"),
+            "서비스유형": ("서비스유형_1차", "서비스유형_2차"),
+            "고객유형":   ("고객유형_1차", "고객유형_2차"),
+        }
+        for _, (c1, c2) in COLS.items():
+            if c1 not in df.columns: df[c1] = None
+            if c2 not in df.columns: df[c2] = None
 
-        # 유형 필터 적용
-        filtered_df = get_filtered_df(
-            df, 
-            고객유형=고객유형,
-            고객유형_2차=고객유형_2차,
-            문의유형=문의유형,
-            문의유형_2차=문의유형_2차,
-            서비스유형=서비스유형,
-            서비스유형_2차=서비스유형_2차
-        )
+        # ---- (3) 다중값/CSV 지원 + 정규화 비교
+        parent_vals = {
+            "문의유형":   _parse_values(문의유형),
+            "서비스유형": _parse_values(서비스유형),
+            "고객유형":   _parse_values(고객유형),
+        }
+        child_vals = {
+            "문의유형_2차":   _parse_values(문의유형_2차),
+            "서비스유형_2차": _parse_values(서비스유형_2차),
+            "고객유형_2차":   _parse_values(고객유형_2차),
+        }
+
+        # 안전 정규화 시리즈
+        def _norm_series(s: pd.Series) -> pd.Series:
+            return s.astype(str).str.strip().str.lower().replace({"none": "", "nan": ""})
+
+        for key in ["문의유형", "서비스유형", "고객유형"]:
+            p_col, c_col = COLS[key]
+            p_vals = set(map(_norm, parent_vals[key]))
+            c_vals = set(map(_norm, child_vals[f"{key}_2차"]))
+            if p_vals and c_vals:
+                # 부모+자식 동시 적용
+                df = df[_norm_series(df[p_col]).isin(p_vals) & _norm_series(df[c_col]).isin(c_vals)]
+            elif p_vals:
+                # 부모만 적용
+                df = df[_norm_series(df[p_col]).isin(p_vals)]
+            elif c_vals:
+                # ✅ 부모 없이 자식만 선택해도 적용
+                df = df[_norm_series(df[c_col]).isin(c_vals)]
+
+        filtered_df = df
         
-        print(f"[FILTER] 유형 필터 적용: {고객유형}/{고객유형_2차}/{문의유형}/{문의유형_2차}/{서비스유형}/{서비스유형_2차}")
-        print(f"[FILTER] 필터링 전: {len(df)} rows, 필터링 후: {len(filtered_df)} rows")
+        print("[FILTER] parent:", parent_vals, "child:", child_vals)
+        print(f"[FILTER] 유형 필터 적용: "
+              f"고객({고객유형})/{고객유형_2차}, "
+              f"문의({문의유형})/{문의유형_2차}, "
+              f"서비스({서비스유형})/{서비스유형_2차}")
+        print(f"[FILTER] 필터링 전: {original_len} rows, 필터링 후: {len(filtered_df)} rows")
         print(f"[PERIOD] filtered rows(after type filters): {len(filtered_df)}")
         
-        # firstAskedAt을 ISO 'YYYY-MM-DDTHH:MM:SS.sss'로 통일
-        if "firstAskedAt" in filtered_df.columns:
-            filtered_df["firstAskedAt"] = pd.to_datetime(filtered_df["firstAskedAt"], errors="coerce")
-            filtered_df = filtered_df[filtered_df["firstAskedAt"].notna()].copy()
-            # 밀리초 3자리까지 유지
-            filtered_df["firstAskedAt"] = filtered_df["firstAskedAt"].dt.strftime("%Y-%m-%dT%H:%M:%S.%f").str.slice(0, 23)
+        # 기존 firstAskedAt 변환 자리에 아래처럼 4개 모두 처리
+        for col in ["firstAskedAt","createdAt","openedAt","closedAt"]:
+            if col in filtered_df.columns:
+                filtered_df.loc[:, col] = _iso_millis(filtered_df[col])
         
-        return filtered_df.to_dict(orient="records")
+        # NaN/Inf 값 제거
+        filtered_df = filtered_df.replace([np.inf, -np.inf], np.nan)
+        data_dict = filtered_df.to_dict(orient="records")
+        return _sanitize_json(data_dict)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"기간별 데이터 조회 실패: {str(e)}")
 
@@ -388,9 +520,11 @@ async def csat_rows(start: str = Query(...), end: str = Query(...)):
         
         if df is None or df.empty:
             return []
-        # 반환 포맷 예시 컬럼:
-        # firstAskedAt, userId, userChatId, A-1, A-2, comment_3, A-4, A-5, comment_6, csatSubmittedAt
-        return df.to_dict(orient="records")
+        
+        # NaN/Inf 값 제거
+        df = df.replace([np.inf, -np.inf], np.nan)
+        data_dict = df.to_dict(orient="records")
+        return _sanitize_json(data_dict)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"CSAT 캐시 조회 실패: {str(e)}")
 
@@ -420,6 +554,9 @@ async def csat_text_analysis(start: str = Query(...), end: str = Query(...)):
         
         if csat_df is None or csat_df.empty:
             return {"status": "error", "message": "CSAT 데이터가 없습니다."}
+        
+        # NaN/Inf 값 제거
+        csat_df = csat_df.replace([np.inf, -np.inf], np.nan)
         
         # comment_3, comment_6 데이터 추출
         comment_3_data = []
@@ -454,7 +591,7 @@ async def csat_text_analysis(start: str = Query(...), end: str = Query(...)):
         comment_3_data.sort(key=lambda x: x.get('firstAskedAt', ''), reverse=True)
         comment_6_data.sort(key=lambda x: x.get('firstAskedAt', ''), reverse=True)
         
-        return {
+        result = {
             "status": "success",
             "comment_3": {
                 "total": len(comment_3_data),
@@ -465,6 +602,8 @@ async def csat_text_analysis(start: str = Query(...), end: str = Query(...)):
                 "data": comment_6_data
             }
         }
+        
+        return _sanitize_json(result)
         
     except Exception as e:
         print(f"[CSAT_TEXT] 분석 실패: {type(e).__name__}: {e}")
@@ -572,9 +711,12 @@ async def csat_analysis(start: str = Query(...), end: str = Query(...)):
             type_scores = {}
 
         # ---- 최종 응답 ----
+        # 총응답수는 전체 CSAT 설문 대상자 수 (각 항목별 최대 응답자 수)
+        total_responses = max([item["응답자수"] for item in summary_list], default=0) if summary_list else 0
+        
         resp = {
             "status": "success",
-            "총응답수": int(len(csat_df)),
+            "총응답수": total_responses,
             "요약": summary_list,
             "유형별": type_scores,     # 조인 안되면 {}
             "comments": comments_payload,
@@ -601,3 +743,69 @@ async def get_user_chat(userchat_id: str):
         return chat_data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"UserChat 조회 실패: {str(e)}")
+
+# ---- 7. 관리자 전용 엔드포인트 ----
+@app.post("/api/admin/cache/rebuild")
+async def admin_rebuild_cache(
+    start: str = Query("2025-04-01"),
+    end: str = Query(...),
+    background: BackgroundTasks = None,
+    _=Depends(admin_guard)
+):
+    """
+    관리자 전용: 전체 캐시 초기화 + 전구간 재수집
+    
+    - X-Admin-Token 헤더로 인증 필요
+    - 긴 작업이므로 백그라운드로 실행 (응답은 즉시)
+    - userchats와 CSAT 캐시 모두 재수집
+    """
+    try:
+        end = limit_end_date(end)
+        
+        # 긴 작업: 백그라운드로 실행 (응답은 즉시)
+        if background is not None:
+            background.add_task(_rebuild_all_cache_task, start, end)
+            return {
+                "status": "accepted", 
+                "message": "재빌드 작업이 백그라운드에서 시작되었습니다.", 
+                "range": [start, end]
+            }
+        else:
+            # 동기 실행 (테스트용)
+            result = await _rebuild_all_cache_task(start, end)
+            return {
+                "status": "ok",
+                "message": "재빌드 작업이 완료되었습니다.",
+                "range": [start, end],
+                "result": result
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"관리자 재빌드 실패: {str(e)}")
+
+@app.post("/api/admin/full-refresh")
+async def admin_full_refresh(
+    start: str = Query(...),
+    end: str = Query(...),
+    include_csat: bool = Query(False),
+    x_admin_token: str = Header(None)
+):
+    # 관리자 토큰 체크
+    if x_admin_token != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    end = limit_end_date(end)
+
+    # 전체 캐시 재수집 (userchats)
+    df = await get_cached_data(start, end, refresh_mode="refresh")
+
+    # 필요 시 CSAT도 수집
+    csat_rows = 0
+    if include_csat:
+        csat_rows = await build_and_cache_csat_rows(start, end)
+
+    return {
+        "message": "full refresh done",
+        "userchats_rows": int(len(df) if df is not None else 0),
+        "csat_rows_saved": int(csat_rows),
+        "range": [start, end]
+    }

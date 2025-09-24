@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useMemo } from 'react';
 
 // data: [{x축: "04", 첫응답시간: 10, 평균응답시간: 20, ...}], 
 // lines: [{key: "첫응답시간", color: "#007bff", label: "첫응답시간"}, ...]
@@ -12,6 +12,112 @@ const MultiLineChartSection = ({
   onDateGroupChange = null
 }) => {
   const svgRef = useRef();
+
+  // 월 레이블 안전 추출
+  const monthLabelOf = (item) => {
+    if (item?.월레이블) return item.월레이블; // 집계 데이터 우선
+    const raw =
+      item?.__wStart ??
+      item?.weekStart ??
+      item?.createdAt ??
+      item?.firstAskedAt;
+    const d = new Date(raw);
+    if (!isNaN(d)) return `${d.getMonth() + 1}월`;
+    return item?.monthLabel || "";
+  };
+
+  // 각 월의 첫 주인지 확인
+  const isFirstWeekOfMonth = (rows, idx) => {
+    if (idx === 0) return true;
+    const cur = rows[idx];
+    const prev = rows[idx - 1];
+    if (!cur || !prev) return false;
+    return cur.월레이블 !== prev.월레이블;
+  };
+
+  // 주간 X축에서 "그 달의 첫 주"만 판단 (ChartSection 동일 로직)
+  const isFirstWeekOfMonthXAxis = (rows, idx) => {
+    if (idx === 0) return true;
+    const cur = rows[idx];
+    const prev = rows[idx - 1];
+    if (!cur || !prev) return false;
+    const monthOf = (it) => it?.월레이블 ?? monthLabelOf(it);
+    return monthOf(cur) !== monthOf(prev);
+  };
+
+  // 주간 집계: data가 일/개별 레코드 기반일 때 주차(월요일~일요일) 평균으로 변환
+  const plotData = useMemo(() => {
+    if (!Array.isArray(data) || data.length === 0) return [];
+    if (dateGroup !== "주간") return data;
+
+    // 날짜키 추론
+    const dateKeys = ["발생시각", "createdAt", "openedAt", "timestamp", "date", "생성시각"];
+    const sample = data[0] || {};
+    const dateKey = dateKeys.find(k => k in sample);
+    if (!dateKey) {
+      // 날짜가 없으면 집계 불가 → 원본 반환
+      return data;
+    }
+
+    // 주차 key 계산 (월요일 시작)
+    const toWeekStart = (d) => {
+      const dt = new Date(d);
+      const day = dt.getDay(); // 0(일)~6(토)
+      const diffToMon = (day + 6) % 7; // 월=0, 화=1 ...
+      const wk = new Date(dt);
+      wk.setDate(dt.getDate() - diffToMon);
+      wk.setHours(0, 0, 0, 0);
+      return wk;
+    };
+
+    // 누적 테이블
+    const acc = new Map();
+    const metricKeys = lines.map(l => l.key);
+
+    data.forEach(row => {
+      const raw = row[dateKey];
+      if (!raw) return;
+      const wStart = toWeekStart(raw);
+      const key = wStart.getTime();
+      if (!acc.has(key)) {
+        const init = { __wStart: wStart, __count: 0, x축: "", 주레이블: "", 주보조레이블: "", 월레이블: "" };
+        metricKeys.forEach(k => { init[k] = 0; });
+        acc.set(key, init);
+      }
+      const bucket = acc.get(key);
+      bucket.__count += 1;
+      metricKeys.forEach(k => { bucket[k] += Number(row[k] || 0); });
+    });
+
+    // 평균 계산 및 라벨 구성
+    const rows = Array.from(acc.values()).sort((a, b) => a.__wStart - b.__wStart).map(b => {
+      const wEnd = new Date(b.__wStart); wEnd.setDate(wEnd.getDate() + 6);
+      const mmdd = (d) => `${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}`;
+      const r = {
+        x축: `${mmdd(b.__wStart)}~${mmdd(wEnd)}`,
+        주레이블: `${mmdd(b.__wStart)}~${mmdd(wEnd)}`,
+        주보조레이블: "", // 월 경계 표시용
+        월레이블: `${b.__wStart.getMonth() + 1}월` // 월 레이블 추가
+      };
+      metricKeys.forEach(k => { r[k] = b.__count ? +(b[k] / b.__count).toFixed(1) : 0; });
+      r.건수 = b.__count;
+      r.__wStart = b.__wStart;
+      return r;
+    });
+
+    // 월 경계 판단 → 첫 주 플래그 저장
+    let prevMonth = "";
+    rows.forEach(r => {
+      const tag = `${r.__wStart.getFullYear()}-${String(r.__wStart.getMonth()+1).padStart(2,"0")}`;
+      r.__isMonthHead = tag !== prevMonth;       // 이 주가 해당 달의 첫 주인가?
+      r.주보조레이블 = r.__isMonthHead ? tag : ""; // (필요 시) 보조 라벨
+      prevMonth = tag;
+      // __wStart 계속 두어도 되지만, 안 쓸 거면 아래 주석 해제
+      // delete r.__wStart;
+    });
+
+    return rows;
+  }, [data, dateGroup, lines]);
   
   // 로딩 상태
   if (loading) {
@@ -29,7 +135,7 @@ const MultiLineChartSection = ({
   }
 
   // 데이터 없음
-  if (!data || data.length === 0) {
+  if (!plotData || plotData.length === 0) {
     return (
       <div style={{
         backgroundColor: "#f8f9fa",
@@ -50,7 +156,7 @@ const MultiLineChartSection = ({
   // 모든 라인의 최대값 계산 (이미 분 단위)
   const allValues = [];
   lines.forEach(line => {
-    data.forEach(item => {
+    plotData.forEach(item => {
       const value = Number(item[line.key]) || 0;
       allValues.push(value);
     });
@@ -59,9 +165,12 @@ const MultiLineChartSection = ({
 
   // 각 라인의 포인트 계산 (이미 분 단위)
   const getLinePoints = (lineKey) => {
-    return data.map((item, idx) => {
+    return plotData.map((item, idx) => {
       const value = Number(item[lineKey]) || 0;
-      const x = (idx / (data.length - 1)) * (chartWidth - 60) + 30;
+      // 데이터가 1개일 때는 차트 중앙에 배치, 여러 개일 때는 균등 분배
+      const x = plotData.length === 1 
+        ? chartWidth / 2  // 데이터가 1개일 때 중앙 배치
+        : (idx / (plotData.length - 1)) * (chartWidth - 60) + 30;  // 여러 개일 때 균등 분배
       const y = chartHeight - 60 - ((value / maxValue) * (chartHeight - 120));
       return { x, y, value, label: item[xLabel] };
     });
@@ -101,15 +210,39 @@ const MultiLineChartSection = ({
       marginBottom: "20px",
       boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
     }}>
-      {label && (
-        <div style={{ 
-          display: "flex", 
-          alignItems: "center", 
-          marginBottom: "16px" 
-        }}>
-          <h3 style={{ color: "#333", margin: 0 }}>{label}</h3>
-        </div>
-      )}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginBottom: "16px"
+      }}>
+        {label && <h3 style={{ color: "#333", margin: 0 }}>{label}</h3>}
+        {onDateGroupChange && (
+          <div style={{
+            display: "inline-flex",
+            border: "1px solid #e5e7eb",
+            borderRadius: 8,
+            overflow: "hidden"
+          }}>
+            {["주간", "월간"].map(g => (
+              <button
+                key={g}
+                onClick={() => onDateGroupChange(g)}
+                style={{
+                  padding: "6px 10px",
+                  fontSize: 12,
+                  border: "none",
+                  background: dateGroup === g ? "#111827" : "#fff",
+                  color: dateGroup === g ? "#fff" : "#374151",
+                  cursor: "pointer"
+                }}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
       <svg ref={svgRef} width={chartWidth} height={chartHeight} style={{ margin: "0 auto", display: "block" }}>
         {/* 배경 그리드 */}
@@ -135,24 +268,54 @@ const MultiLineChartSection = ({
         })}
         
         {/* X축 라벨 */}
-        {data.map((item, idx) => {
-          const x = (idx / (data.length - 1)) * (chartWidth - 60) + 30;
-          return (
-            <g key={idx}>
-              <line x1={x} y1={chartHeight - 60} x2={x} y2={chartHeight - 55} stroke="#ccc" strokeWidth="1" />
-              {/* X축 라벨 */}
-              <text x={x} y={chartHeight - 40} fontSize="12" textAnchor="middle" fill="#666">
-                {item[xLabel]}
-              </text>
-              {/* 월 레이블 (월이 변경되는 지점에만) */}
-              {item.월레이블 && (
-                <text x={x} y={chartHeight - 20} fontSize="13" textAnchor="middle" fill="#007bff" fontWeight="bold">
-                  {item.월레이블}
-                </text>
-              )}
-            </g>
-          );
-        })}
+        {(() => {
+          const rows = plotData;
+          return rows.map((item, idx) => {
+            const x = rows.length === 1
+              ? chartWidth / 2
+              : (idx / (rows.length - 1)) * (chartWidth - 60) + 30;
+
+            return (
+              <g key={idx}>
+                <line
+                  x1={x}
+                  y1={chartHeight - 60}
+                  x2={x}
+                  y2={chartHeight - 55}
+                  stroke="#ccc"
+                  strokeWidth="1"
+                />
+
+                {/* 월간: 모든 포인트에 라벨 */}
+                {dateGroup === "월간" && (
+                  <text
+                    x={x}
+                    y={chartHeight - 40}
+                    fontSize="12"
+                    textAnchor="middle"
+                    fill="#666"
+                  >
+                    {item[xLabel]}
+                  </text>
+                )}
+
+                {/* 주간: 그 달의 첫 주만 월 레이블 */}
+                {dateGroup === "주간" && item.월레이블 && isFirstWeekOfMonth(rows, idx) && (
+                  <text
+                    x={x}
+                    y={chartHeight - 40}
+                    fontSize="13"
+                    textAnchor="middle"
+                    fill="#007bff"
+                    fontWeight="bold"
+                  >
+                    {item.월레이블}
+                  </text>
+                )}
+              </g>
+            );
+          });
+        })()}
         
         {/* 각 라인 그리기 */}
         {lines.map((line, lineIdx) => {
@@ -201,6 +364,8 @@ const MultiLineChartSection = ({
                       top: ${e.clientY - 10}px;
                     `;
                     tooltip.textContent = `${line.label}: ${point.value.toFixed(1)}분`;
+                    // 주간/월간 전환 시에도 동일하게 동작. 필요하면
+                    // tooltip.textContent 앞에 `${point.label} · `를 붙여 기간 라벨을 노출할 수 있음.
                     document.body.appendChild(tooltip);
                     
                     e.target.onmouseleave = () => document.body.removeChild(tooltip);

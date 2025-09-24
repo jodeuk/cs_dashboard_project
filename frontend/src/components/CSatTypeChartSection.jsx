@@ -1,8 +1,25 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
+// CSAT 질문 매핑
+const CSAT_QUESTIONS = {
+  "A-1": "상담원의 친절도는 어떠셨나요?",
+  "A-2": "상담원이 문제 해결에 도움이 되었다고 느끼시나요?",
+  "A-3": "상담 과정에 대해 개선점이나 의견이 있으시면 자유롭게 작성해 주세요.",
+  "A-4": "플랫폼의 주요 기능의 작동과 안정성은 만족스러웠나요?",
+  "A-5": "플랫폼의 디자인과 시각적 구성(화면 구성, 글자 크기, 버튼 크기 등)에 대해 어떻게 생각하시나요?",
+  "A-6": "플랫폼에 대해 개선점이나 건의사항이 있으시면 작성해 주세요."
+};
+
 export default function CSatTypeChartSection({ typeScores, typeLabel }) {
-  const [selectedType, setSelectedType] = useState("문의유형");
+  // typeScores에 "처리유형" 키가 있으면 우선 선택, 없으면 전달된 typeLabel, 그것도 없으면 첫 번째 키
+  const initialType = useMemo(() => {
+    const keys = Object.keys(typeScores || {});
+    if (keys.includes("처리유형")) return "처리유형";
+    if (typeLabel && keys.includes(typeLabel)) return typeLabel;
+    return keys[0] || "문의유형";
+  }, [typeScores, typeLabel]);
+  const [selectedType, setSelectedType] = useState(initialType);
   const [selectedCsat, setSelectedCsat] = useState("A-1");
 
   if (!typeScores || Object.keys(typeScores).length === 0) {
@@ -11,7 +28,7 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
 
   // 사용 가능한 유형들
   const availableTypes = Object.keys(typeScores);
-  const csatOptions = ["A-1", "A-2", "A-4", "A-5"];
+  const csatOptions = ["A-1", "A-2", "A-3", "A-4", "A-5", "A-6"];
 
   // 선택된 유형의 데이터 가져오기
   const getTypeData = () => {
@@ -68,7 +85,9 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
               }}
             >
               {csatOptions.map(csat => (
-                <option key={csat} value={csat}>{csat}</option>
+                <option key={csat} value={csat}>
+                  {csat} {CSAT_QUESTIONS[csat] ? `· ${CSAT_QUESTIONS[csat]}` : ""}
+                </option>
               ))}
             </select>
           </div>
@@ -81,7 +100,8 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
           {/* 1. 응답자수 차트 */}
           <div>
             <h4 style={{ marginBottom: "16px", color: "#495057", fontSize: "16px" }}>
-              {selectedType}별 {selectedCsat} 응답자수
+              {selectedType}별 {selectedCsat}
+              {CSAT_QUESTIONS[selectedCsat] ? ` · ${CSAT_QUESTIONS[selectedCsat]}` : ""} 응답자수
             </h4>
             <ResponsiveContainer width="100%" height={400}>
               <BarChart data={chartData} layout="vertical" margin={{ top: 10, right: 10, left: 20, bottom: 10 }}>
@@ -89,8 +109,8 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
                 <XAxis type="number" />
                 <YAxis type="category" dataKey={selectedType} width={200} />
                 <Tooltip 
-                  formatter={(value, name) => [`${value}명`, '응답자수']}
-                  labelFormatter={(label) => `${label}`}
+                  formatter={(value) => [`${value}명`, '응답자수']}
+                  labelFormatter={(label) => `${label} · ${CSAT_QUESTIONS[selectedCsat] || ""}`}
                 />
                 <Legend />
                 <Bar dataKey="응답자수" fill="#007bff" name="응답자수" />
@@ -101,7 +121,8 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
           {/* 2. 평균점수 차트 */}
           <div>
             <h4 style={{ marginBottom: "16px", color: "#495057", fontSize: "16px" }}>
-              {selectedType}별 {selectedCsat} 평균점수
+              {selectedType}별 {selectedCsat}
+              {CSAT_QUESTIONS[selectedCsat] ? ` · ${CSAT_QUESTIONS[selectedCsat]}` : ""} 평균점수
             </h4>
             <ResponsiveContainer width="100%" height={400}>
               <BarChart data={chartData} layout="vertical" margin={{ top: 10, right: 10, left: 20, bottom: 10 }}>
@@ -109,8 +130,8 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
                 <XAxis type="number" domain={[0, 5]} />
                 <YAxis type="category" dataKey={selectedType} width={200} />
                 <Tooltip 
-                  formatter={(value, name) => [`${value}점`, '평균점수']}
-                  labelFormatter={(label) => `${label}`}
+                  formatter={(value) => [`${value}점`, '평균점수']}
+                  labelFormatter={(label) => `${label} · ${CSAT_QUESTIONS[selectedCsat] || ""}`}
                 />
                 <Legend />
                 <Bar dataKey="평균점수" fill="#28a745" name="평균점수" />

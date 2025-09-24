@@ -8,7 +8,6 @@ const ChartSection = ({
   yLabel = "y축",
   loading = false,
   dateGroup = "월간",
-  onDateGroupChange = null,
   chartType = "line", // "line" 또는 "horizontalBar"
   width = 650,
   height = 350
@@ -75,17 +74,13 @@ const ChartSection = ({
   const chartHeight = height;
   const chartWidth = width;
 
-  // 각 월의 첫 주인지 확인하는 함수
-  const isFirstWeekOfMonth = (data, currentIndex) => {
-    if (currentIndex === 0) return true; // 첫 번째 데이터는 항상 표시
-    
-    const currentItem = data[currentIndex];
-    const prevItem = data[currentIndex - 1];
-    
-    if (!currentItem || !prevItem) return false;
-    
-    // 현재 월과 이전 월이 다르면 첫 주
-    return currentItem.월레이블 !== prevItem.월레이블;
+  // 각 월의 첫 주인지 확인
+  const isFirstWeekOfMonth = (rows, idx) => {
+    if (idx === 0) return true;
+    const cur = rows[idx];
+    const prev = rows[idx - 1];
+    if (!cur || !prev) return false;
+    return cur.월레이블 !== prev.월레이블;
   };
 
   // 가로막대 차트 그리기
@@ -268,28 +263,55 @@ const ChartSection = ({
            });
          })()}
         
-                         {/* X축 라벨 */}
-        {points.map((point, idx) => (
-          <g key={idx}>
-            <line x1={point.x} y1={chartHeight - 60} x2={point.x} y2={chartHeight - 55} stroke="#ccc" strokeWidth="1" />
-            {/* 월간일 때는 X축 라벨 표시, 주간일 때는 월 레이블만 */}
-            {dateGroup === "월간" ? (
-              <text x={point.x} y={chartHeight - 40} fontSize="12" textAnchor="middle" fill="#666">
-                {point.label}
-              </text>
-            ) : (
-               /* 주간일 때는 월 레이블만 표시 (첫 주에만) */
-               <g>
-                 {/* 월 레이블 (각 월의 첫 주에만 표시) */}
-                 {data[idx] && data[idx].월레이블 && isFirstWeekOfMonth(data, idx) && (
-                   <text x={point.x} y={chartHeight - 40} fontSize="13" textAnchor="middle" fill="#007bff" fontWeight="bold">
-                    {data[idx].월레이블}
+        {/* X축 라벨 */}
+        {(() => {
+          const rows = safeData;
+          return rows.map((item, idx) => {
+            const x = rows.length === 1
+              ? chartWidth / 2
+              : (idx / (rows.length - 1)) * (chartWidth - 60) + 30;
+
+            return (
+              <g key={idx}>
+                <line
+                  x1={x}
+                  y1={chartHeight - 60}
+                  x2={x}
+                  y2={chartHeight - 55}
+                  stroke="#ccc"
+                  strokeWidth="1"
+                />
+
+                {/* 월간: 모든 포인트에 라벨 */}
+                {dateGroup === "월간" && (
+                  <text
+                    x={x}
+                    y={chartHeight - 40}
+                    fontSize="12"
+                    textAnchor="middle"
+                    fill="#666"
+                  >
+                    {item[xLabel] || item.label}
+                  </text>
+                )}
+
+                {/* 주간: 그 달의 첫 주만 월 레이블 */}
+                {dateGroup === "주간" && item.월레이블 && isFirstWeekOfMonth(rows, idx) && (
+                  <text
+                    x={x}
+                    y={chartHeight - 40}
+                    fontSize="13"
+                    textAnchor="middle"
+                    fill="#007bff"
+                    fontWeight="bold"
+                  >
+                    {item.월레이블}
                   </text>
                 )}
               </g>
-            )}
-          </g>
-        ))}
+            );
+          });
+        })()}
         
         {/* 라인 차트 */}
         <path d={linePath} stroke="#007bff" strokeWidth="3" fill="none" />
@@ -350,32 +372,9 @@ const ChartSection = ({
       marginBottom: "20px",
       boxShadow: "0 2px 4px rgba(0,0,0,0.1)"
     }}>
-             <div style={{ 
-         display: "flex", 
-         alignItems: "center", 
-         marginBottom: "16px" 
-       }}>
-         <h3 style={{ color: "#333", margin: 0, marginRight: "12px" }}>{label}</h3>
-         {chartType === "line" && (
-         <select
-           value={dateGroup}
-           onChange={(e) => {
-             if (onDateGroupChange) {
-               onDateGroupChange(e.target.value);
-             }
-           }}
-           style={{ 
-             padding: "4px 8px", 
-             borderRadius: "4px", 
-             border: "1px solid #ddd",
-             fontSize: "14px"
-           }}
-         >
-           <option value="월간">월간</option>
-           <option value="주간">주간</option>
-         </select>
-         )}
-       </div>
+      {label && (
+        <h3 style={{ color: "#333", margin: "0 0 16px 0" }}>{label}</h3>
+      )}
       {chartType === "horizontalBar" ? renderHorizontalBarChart() : renderLineChart()}
     </div>
   );

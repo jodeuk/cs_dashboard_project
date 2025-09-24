@@ -1,0 +1,10 @@
+[33m991ad79f[m[33m ([m[1;36mHEAD -> [m[1;32mmaster[m[33m, [m[1;31morigin/master[m[33m)[m Fix: 유형별 CSAT 차트에서 Y축 라벨 생략 방지 - 차트 높이 400px, Y축 너비 200px로 확장
+[33me93e3115[m Fix: 주간 차트에서 첫 번째 데이터에 월 레이블 표시 (6월 라벨 누락 문제 해결)
+[33m1fe85843[m Fix indentation error in main.py line 413
+[33mfe392339[m Fix indentation issues in cs_utils.py
+[33me94f430c[m feat: CSAT 최신화 및 데이터 로딩 최적화
+[33meaa584d8[m Fix API connectivity and update port configuration
+[33m134de1a4[m Render 환경에서 Persistent Disk 사용하도록 캐시 디렉토리 수정
+[33mc9a14163[m Render 환경 감지 및 /tmp 캐시 디렉토리 사용으로 수정
+[33me872419e[m Improve cache directory path with absolute path and debug logging
+[33mf1aa4bb9[m Fix cache directory path issue - use absolute path to project root cache folder

@@ -1,12 +1,40 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { fetchUserchats, fetchFilterOptions, checkApiHealth } from "./api";
+import React, { lazy, Suspense, useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { fetchUserchats, checkApiHealth } from "./api";
 import FilterPanel from "./components/FilterPanel";
 import ChartSection from "./components/ChartSection";
 import MultiLineChartSection from "./components/MultiLineChartSection";
+import HandlingTypeDonut from "./components/HandlingTypeDonut";
+import SLAStackBar from "./components/SLAStackBar";
+// 박스플롯/비즈웜 대신 분포 커브 차트
+import HandlingLeadtimeDensity from "./components/HandlingLeadtimeDensity";
 
-import CacheStatusSection from "./components/CacheStatusSection";
-import CSatChartSection from "./components/CSatChartSection";
-import CSatTypeChartSection from "./components/CSatTypeChartSection";
+const CacheStatusSection = lazy(() => import("./components/CacheStatusSection"));
+const CSatChartSection = lazy(() => import("./components/CSatChartSection"));
+const CSatTypeChartSection = lazy(() => import("./components/CSatTypeChartSection"));
+const CSatCommentsSection = lazy(() => import("./components/CSatCommentsSection"));
+
+// ===== App.jsx 파일 최상단(컴포넌트 밖) =====
+const normArr = (v) => Array.isArray(v) ? v.filter(Boolean) : (v && v !== "전체" ? [v] : []);
+const joinOrAll = (vals) => (Array.isArray(vals) && vals.length > 0) ? vals.join(",") : "전체";
+const primaryOf = (s) => (typeof s === "string" && s.includes("/")) ? s.split("/")[0].trim() : (s || "");
+
+function buildFilterParams(start, end, filterVals) {
+  const effectiveChild = (parentVals, childVals) => {
+    const p = normArr(parentVals);
+    if (p.length === 0) return "전체";
+    const c = normArr(childVals);
+    return c.length ? c.join(",") : "전체";
+  };
+  return {
+    start, end, refresh_mode: "cache",
+    serviceType:   joinOrAll(filterVals.서비스유형),
+    serviceType2:  effectiveChild(filterVals.서비스유형,  filterVals.서비스유형_2차),
+    inquiryType:   joinOrAll(filterVals.문의유형),
+    inquiryType2:  effectiveChild(filterVals.문의유형,  filterVals.문의유형_2차),
+    customerType:  joinOrAll(filterVals.고객유형),
+    customerType2: effectiveChild(filterVals.고객유형, filterVals.고객유형_2차),
+  };
+}
 
 // === KST 유틸 ===
 const KST_OFFSET = "+09:00";
@@ -26,43 +54,6 @@ const safeParse = (v) => {
   } catch { return null; }
 };
 
-// 어떤 스키마든 A-3/A-6 코멘트 추출
-const extractCsatFromAny = (src, push, meta) => {
-  if (src == null) return;
-  // 문자열로 들어온 JSON/유사 JSON 처리
-  if (typeof src === "string") {
-    const obj = safeParse(src) || safeParse(src.replace(/'/g, '"'));
-    if (obj) extractCsatFromAny(obj, push, meta);
-    return;
-  }
-  if (typeof src !== "object") return;
-
-  // 1) 배열형 응답
-  if (Array.isArray(src)) {
-    src.forEach((x) => extractCsatFromAny(x, push, meta));
-    return;
-  }
-  // 2) 일반 키 스캔 (A-3, A3, Q3, 3 등)
-  for (const [k, v] of Object.entries(src)) {
-    const key = String(k).toUpperCase().replace(/\s+/g, "");
-    const isA3 = /(^A-?3$|^Q3$|(^|[^0-9])3$)/.test(key);
-    const isA6 = /(^A-?6$|^Q6$|(^|[^0-9])6$)/.test(key);
-    // 한글 필드명까지 같이 탐색
-    const text = typeof v === "string"
-      ? v
-      : (v && (v.comment ?? v.text ?? v.의견 ?? v.코멘트 ?? v.답변 ?? v.내용 ?? null));
-    const score = v && (v.score ?? v.value ?? null);
-    if (isA3 && text?.trim()) push("A-3", text, score, meta);
-    if (isA6 && text?.trim()) push("A-6", text, score, meta);
-    // 중첩 객체도 탐색
-    if (v && typeof v === "object") extractCsatFromAny(v, push, meta);
-  }
-  // 3) 관용 필드
-  const a3t = src.A3_comment ?? src.comment3 ?? src.c3 ?? src["A3 코멘트"] ?? src["A3의견"];
-  const a6t = src.A6_comment ?? src.comment6 ?? src.c6 ?? src["A6 코멘트"] ?? src["A6의견"];
-  if (a3t?.trim()) push("A-3", a3t, src.score3 ?? null, meta);
-  if (a6t?.trim()) push("A-6", a6t, src.score6 ?? null, meta);
-};
 const toFiniteNumber = (v, def = 0) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : def;
@@ -70,7 +61,6 @@ const toFiniteNumber = (v, def = 0) => {
 const asString = (v, def = "") => (v == null ? def : String(v));
 
 // ── 태그 매핑 유틸 ───────────────────────────────────────────────
-const primaryOf = (s) => (typeof s === "string" && s.includes("/")) ? s.split("/")[0].trim() : (s || "");
 // 기존에는 1차만 리턴했는데, 2차까지 같이 담아줍니다.
 const pickTagsFromRow = (r) => ({
   고객유형: r.고객유형 || r.고객유형_1차 || "",
@@ -100,11 +90,7 @@ function parseTsKST(ts) {
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? null : d;
 }
-function buildRangeKST(startStr, endStr) {
-  const startMs = new Date(`${startStr}T00:00:00.000${KST_OFFSET}`).getTime();
-  const endMs   = new Date(`${endStr}T23:59:59.999${KST_OFFSET}`).getTime();
-  return { startMs, endMs };
-}
+// (사용처 없음 삭제)
 
 // 차트 표준 데이터키로 정규화: {label, value}
 function normalizeChartRows(
@@ -130,6 +116,9 @@ function normalizeChartRows(
 const formatDate = (date) => date.toISOString().split("T")[0];
 
 function App() {
+  // 관리자 권한 확인
+  const isAdmin = process.env.REACT_APP_ENABLE_ADMIN === "true";
+
   // 날짜 초기값: 한 달 전 ~ 오늘
   const today = new Date();
   const oneMonthAgo = new Date(today.getFullYear(), today.getMonth() - 1, today.getDate());
@@ -138,16 +127,19 @@ function App() {
 
   // 상태
   const [userchats, setUserchats] = useState([]);
-  const [filterOptions, setFilterOptions] = useState({});
+  // ✅ 복수선택 지원 (배열). 비선택 = [] = "전체"와 동일 의미
   const [filterVals, setFilterVals] = useState({
     고객유형: [],
-    고객유형_2차: [],
     문의유형: [],
-    문의유형_2차: [],
     서비스유형: [],
+    고객유형_2차: [],
+    문의유형_2차: [],
     서비스유형_2차: [],
   });
-  const [dateGroup, setDateGroup] = useState("월간");
+
+  // 차트별로 독립 상태
+  const [csDateGroup, setCsDateGroup] = useState("월간");       // CS 문의량 차트용
+  const [mlDateGroup, setMlDateGroup] = useState("월간");       // 평균 응답/해결 시간 차트용
   const [start, setStart] = useState(oneMonthAgoStr);
   const [end, setEnd] = useState(todayStr);
   const [loading, setLoading] = useState(false);
@@ -157,7 +149,123 @@ function App() {
   const [csatData, setCsatData] = useState(null);
   const [activeTab, setActiveTab] = useState("CS");
   const [tooltip, setTooltip] = useState({ visible: false, x: 0, y: 0, title: "", count: 0, percent: 0 });
-  const [hoverIndex, setHoverIndex] = useState(null);
+  const [, setHoverIndex] = useState(null); // 값은 안 쓰므로 변수 생략
+
+  // ✅ rows = userchats (서버에서 이미 필터링된 최종 데이터)
+  const rows = useMemo(
+    () => (Array.isArray(userchats) ? userchats : []),
+    [userchats]
+  );
+
+  // ✅ 서버가 필터를 적용해 준 결과만 사용
+  const filteredRows = rows;
+
+  // ✅ 1차 옵션: userchats에서 동적 생성
+  const serviceTypeOptions = useMemo(() => {
+    const set = new Set();
+    filteredRows.forEach(r => {
+      const { 서비스유형 } = pickTagsFromRow(r);   // ← _1차까지 fallback
+      if (서비스유형) set.add(서비스유형);
+    });
+    return Array.from(set).sort();
+  }, [rows]);
+
+  const inquiryTypeOptions = useMemo(() => {
+    const set = new Set();
+    filteredRows.forEach(r => {
+      const { 문의유형 } = pickTagsFromRow(r);
+      if (문의유형) set.add(문의유형);
+    });
+    return Array.from(set).sort();
+  }, [rows]);
+
+  const customerTypeOptions = useMemo(() => {
+    const set = new Set();
+    filteredRows.forEach(r => {
+      const { 고객유형 } = pickTagsFromRow(r);
+      if (고객유형) set.add(고객유형);
+    });
+    return Array.from(set).sort();
+  }, [rows]);
+
+  // ✅ 2차 옵션: 부모(복수) 합집합 (userchats 기반)
+  const serviceType2Options = useMemo(() => {
+    const parents = normArr(filterVals.서비스유형);
+    const set = new Set();
+    filteredRows.forEach(r => {
+      const t = pickTagsFromRow(r);
+      if ((!parents.length || parents.includes(t.서비스유형)) && t.서비스유형_2차) {
+        set.add(t.서비스유형_2차);
+      }
+    });
+    return Array.from(set).sort();
+  }, [filterVals.서비스유형, rows]);
+
+  const inquiryType2Options = useMemo(() => {
+    const parents = normArr(filterVals.문의유형);
+    const set = new Set();
+    filteredRows.forEach(r => {
+      const t = pickTagsFromRow(r);
+      if ((!parents.length || parents.includes(t.문의유형)) && t.문의유형_2차) {
+        set.add(t.문의유형_2차);
+      }
+    });
+    return Array.from(set).sort();
+  }, [filterVals.문의유형, rows]);
+
+  const customerType2Options = useMemo(() => {
+    const parents = normArr(filterVals.고객유형);
+    const set = new Set();
+    filteredRows.forEach(r => {
+      const t = pickTagsFromRow(r);
+      if ((!parents.length || parents.includes(t.고객유형)) && t.고객유형_2차) {
+        set.add(t.고객유형_2차);
+      }
+    });
+    return Array.from(set).sort();
+  }, [filterVals.고객유형, rows]);
+
+  // subtypeMaps 생성 (1차 → 2차 매핑)
+  const subtypeMaps = useMemo(() => {
+    const maps = { service: {}, inquiry: {}, customer: {} };
+    
+    filteredRows.forEach(row => {
+      // 서비스유형 매핑
+      const serviceParent = row.서비스유형;
+      const serviceChild = row.서비스유형_2차;
+      if (serviceParent && serviceChild && serviceChild !== "전체") {
+        if (!maps.service[serviceParent]) maps.service[serviceParent] = [];
+        if (!maps.service[serviceParent].includes(serviceChild)) {
+          maps.service[serviceParent].push(serviceChild);
+        }
+      }
+      
+      // 문의유형 매핑
+      const inquiryParent = row.문의유형;
+      const inquiryChild = row.문의유형_2차;
+      if (inquiryParent && inquiryChild && inquiryChild !== "전체") {
+        if (!maps.inquiry[inquiryParent]) maps.inquiry[inquiryParent] = [];
+        if (!maps.inquiry[inquiryParent].includes(inquiryChild)) {
+          maps.inquiry[inquiryParent].push(inquiryChild);
+        }
+      }
+      
+      // 고객유형 매핑
+      const customerParent = row.고객유형;
+      const customerChild = row.고객유형_2차;
+      if (customerParent && customerChild && customerChild !== "전체") {
+        if (!maps.customer[customerParent]) maps.customer[customerParent] = [];
+        if (!maps.customer[customerParent].includes(customerChild)) {
+          maps.customer[customerParent].push(customerChild);
+        }
+      }
+    });
+    
+    return maps;
+  }, [rows]);
+
+  // (App 내부 duplicate 함수 삭제 — buildFilterParams 내부에서 처리됨)
+
 
   // CSAT 코멘트 분리 (csat-analysis 응답에서)
   const csatCommentsRaw = useMemo(() => {
@@ -190,163 +298,57 @@ function App() {
       .catch(() => setApiConnected(false));
   }, []);
 
-  // 캐시데이터 로드
-  const loadCacheData = useCallback(
-    async (refreshMode = "cache") => {
-      setLoading(true);
-      try {
-        const today = new Date();
-        const currentYear = today.getFullYear();
-        const currentMonth = today.getMonth() + 1;
-        const currentDay = today.getDate();
-
-        const startDate = "2025-04-01";
-        const endDate = `${currentYear}-${String(currentMonth).padStart(2, "0")}-${String(currentDay).padStart(2, "0")}`;
-
-        console.log("📅 데이터 로드 범위:", startDate, "~", endDate);
-
-        if (refreshMode === "refresh") {
-          console.log("🔄 전체 갱신 모드 - 기존 캐시 완전 삭제 후 새로 수집");
-        } else if (refreshMode === "update") {
-          console.log("📥 최신화 모드 - 기존 캐시 유지 + 누락된 기간만 API 호출");
-        } else {
-          console.log("💾 캐시 모드 - 기존 캐시만 사용");
-        }
-
-        // 초기 로딩: 최근 1개월만
-        const rows = await fetchUserchats(oneMonthAgoStr, todayStr, refreshMode);
-        setUserchats(Array.isArray(rows) ? rows : []);
-
-        // 필터 옵션은 전체 범위
-        const opts = await fetchFilterOptions(startDate, endDate, refreshMode);
-        setFilterOptions(opts || {});
-
-        if (refreshMode === "refresh") {
-          setSuccess("✅ 데이터가 완전히 갱신되었습니다.");
-          setTimeout(() => setSuccess(null), 3000);
-        } else if (refreshMode === "update") {
-          console.log("📥 CS 데이터 최신화 완료");
-          setSuccess("✅ CS 데이터가 최신화되었습니다.");
-          setTimeout(() => setSuccess(null), 3000);
-
-          // CSAT 최신화(비동기)
-          (async () => {
-            try {
-              const oneWeekAgo = new Date();
-              oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-              const csatStart = oneWeekAgo.toISOString().split("T")[0];
-              const csatEnd = todayStr;
-
-              console.log("📥 CSAT 최신화 시작(비동기):", csatStart, "~", csatEnd);
-              const csatRes = await fetch(
-                `${process.env.REACT_APP_API_BASE}/api/cache/refresh?start=${csatStart}&end=${csatEnd}&force=true&include_csat=true`
-              );
-              if (csatRes.ok) {
-                const csatResult = await csatRes.json();
-                console.log("✅ CSAT 최신화 완료:", csatResult);
-                loadCsatAnalysis(); // 최신화 후 재로드
-                setSuccess("✅ CSAT 데이터도 최신화되었습니다.");
-                setTimeout(() => setSuccess(null), 3000);
-              } else {
-                console.error("❌ CSAT 최신화 API 응답 오류:", csatRes.status);
-              }
-            } catch (err) {
-              console.error("❌ CSAT 최신화 실패:", err);
-            }
-          })();
-        }
-      } catch (err) {
-        setError("캐시 데이터 로드 실패: " + (err?.message || err));
-      } finally {
-        setLoading(false);
-      }
-    },
-    [oneMonthAgoStr, todayStr]
-  );
-
-  // 새로고침 감지 → 자동 로드
-  useEffect(() => {
-    console.log("🔄 새로고침 감지됨 - 데이터 자동 갱신");
-    if (apiConnected) loadCacheData();
-  }, [apiConnected, loadCacheData]);
-
-  // CSAT 분석 로드
-  const loadCsatAnalysis = useCallback(async () => {
-    console.log("🔍 CSAT 분석 시작...");
+  // ✅ useEffect보다 위에 "함수 선언문"으로 둔다
+  async function loadCsatAnalysis() {
     try {
       const params = new URLSearchParams({ start, end });
       const res = await fetch(`${process.env.REACT_APP_API_BASE}/api/csat-analysis?${params.toString()}`);
-      if (res.ok) {
-        const result = await res.json();
-        console.log("✅ CSAT 분석 결과:", result);
-        console.log("🔍 CSAT 데이터 구조:", Object.keys(result || {}));
-        setCsatData(result);
-      } else {
-        console.log("⚠️ CSAT 분석 API 호출 실패:", res.status);
-        setCsatData(null);
-      }
-    } catch (e) {
-      console.error("❌ CSAT 분석 로드 실패", e);
+      setCsatData(res.ok ? await res.json() : null);
+    } catch {
       setCsatData(null);
     }
-  }, [start, end]);
+  }
 
+
+  const fetchRowsWithParams = useCallback(async (mode = "cache") => {
+    try {
+      setLoading(true);
+      const params = buildFilterParams(start, end, filterVals);
+      const rows = await fetchUserchats(start, end, mode, params); // 취소여도 배열 반환
+      setUserchats(Array.isArray(rows) ? rows : []);
+      if (mode === "update") {
+        setSuccess("✅ 데이터 최신화 완료");
+        setTimeout(() => setSuccess(null), 2000);
+      }
+    } catch (err) {
+      // ✅ 취소된 요청은 에러로 처리하지 않음
+      const isCanceled = 
+        err?.name === "CanceledError" ||
+        err?.name === "AbortError" ||
+        err?.code === "ERR_CANCELED" ||
+        err?.message === "canceled";
+      
+      if (!isCanceled) {
+        console.error("❌ 데이터 로드 실패:", err);
+        setError("데이터 로드 실패: " + (err?.message || err));
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [start, end, filterVals]);
+
+  // 최초 연결 후, 현재 필터로 로드
   useEffect(() => {
-    if (apiConnected) loadCsatAnalysis();
-  }, [apiConnected, loadCsatAnalysis]);
-
-  // 현재 기간의 row 필터링
-  const filteredRows = useMemo(() => {
-    if (loading || !Array.isArray(userchats) || userchats.length === 0 || !start || !end) {
-      console.log("⏳ skip filteredRows compute (loading or not ready)", {
-        loading,
-        userchatsLen: userchats?.length,
-        start,
-        end,
-      });
-      return [];
+    if (apiConnected) {
+      fetchRowsWithParams("cache");
+      loadCsatAnalysis();
     }
+  }, [apiConnected, start, end, filterVals, fetchRowsWithParams]);
 
-    console.log("🔍 filteredRows 계산 시작:", { start, end, userchatsLength: userchats?.length });
-    window.debugData = { userchats, start, end, filterVals };
+  // ✅ 별도 이펙트 불필요 (위 이펙트가 start/end/filterVals 변화에 대응)
 
-    const initialStartDate = oneMonthAgoStr;
-    if (
-      start < initialStartDate &&
-      !userchats.some((r) => {
-        const dt = parseTsKST(r?.firstAskedAt);
-        return dt && dt.getTime() < new Date(`${initialStartDate}T00:00:00${KST_OFFSET}`).getTime();
-      })
-    ) {
-      console.log("📥 이전 기간 데이터 필요 - 추가 로드 시작");
-      (async () => {
-        try {
-          const additionalRows = await fetchUserchats("2025-04-01", initialStartDate, "cache");
-          if (additionalRows && additionalRows.length > 0) {
-            console.log("✅ 추가 데이터 로드 완료:", additionalRows.length, "건");
-            setUserchats((prev) => [...additionalRows, ...prev]);
-          }
-        } catch (err) {
-          console.error("❌ 추가 데이터 로드 실패:", err);
-        }
-      })();
-    }
 
-    const { startMs, endMs } = buildRangeKST(start, end);
-    const baseFiltered = (Array.isArray(userchats) ? userchats : []).filter((r) => {
-      const dt = parseTsKST(r?.firstAskedAt);
-      const t = dt ? dt.getTime() : NaN;
-      return Number.isFinite(t) && t >= startMs && t <= endMs;
-    });
-
-    console.log("🔍 filteredRows 결과:", {
-      filteredLength: baseFiltered.length,
-      sampleData: baseFiltered.slice(0, 2),
-      dateRange: { start, end },
-    });
-
-    return baseFiltered;
-  }, [userchats, start, end, loading, oneMonthAgoStr, filterVals]);
+  window.debugData = { rows, start, end, filterVals };
 
   // CSAT 코멘트에 userchats 태그 병합 (렌더용)
   const csatTextWithTags = useMemo(() => {
@@ -356,7 +358,7 @@ function App() {
       const byChatId = new Map();
       const byUserDay = new Map();
       const byUserList = new Map();
-      (filteredRows || []).forEach((r) => {
+      filteredRows.forEach((r) => {
         const tags = pickTagsFromRow(r);
         const t = parseTsKST(r.firstAskedAt)?.getTime();
         if (r.userChatId) byChatId.set(String(r.userChatId), tags);
@@ -409,112 +411,14 @@ function App() {
       console.warn("CSAT 태그 병합 실패:", e);
       return null;
     }
-  }, [csatCommentsRaw, filteredRows]);
+  }, [csatCommentsRaw, rows]);
 
-  // 추가 필터링 (다중 선택 지원)
-  const filtered = useMemo(() => {
-    return filteredRows.filter((item) => {
-      if (filterVals.고객유형?.length > 0) {
-        const matches = filterVals.고객유형.some(
-          (selectedType) =>
-            item.고객유형 === selectedType ||
-            item.고객유형_1차 === selectedType ||
-            (item.고객유형 && item.고객유형.includes(selectedType))
-        );
-        if (!matches) return false;
-      }
-      if (filterVals.고객유형_2차?.length > 0) {
-        if (!filterVals.고객유형_2차.includes(item.고객유형_2차)) return false;
-      }
-      if (filterVals.문의유형?.length > 0) {
-        const matches = filterVals.문의유형.some(
-          (selectedType) =>
-            item.문의유형 === selectedType ||
-            item.문의유형_1차 === selectedType ||
-            (item.문의유형 && item.문의유형.includes(selectedType))
-        );
-        if (!matches) return false;
-      }
-      if (filterVals.문의유형_2차?.length > 0) {
-        if (!filterVals.문의유형_2차.includes(item.문의유형_2차)) return false;
-      }
-      if (filterVals.서비스유형?.length > 0) {
-        const matches = filterVals.서비스유형.some(
-          (selectedType) =>
-            item.서비스유형 === selectedType ||
-            item.서비스유형_1차 === selectedType ||
-            (item.서비스유형 && item.서비스유형.includes(selectedType))
-        );
-        if (!matches) return false;
-      }
-      if (filterVals.서비스유형_2차?.length > 0) {
-        if (!filterVals.서비스유형_2차.includes(item.서비스유형_2차)) return false;
-      }
-      return true;
-    });
-  }, [filteredRows, filterVals]);
-
-  // 유형 필터 변경시 자동 적용
-  useEffect(() => {
-    if (Object.keys(filterVals).length > 0) {
-      console.log("🔍 유형 필터 변경 감지:", filterVals);
-      handleFilterChange();
-    }
-  }, [filterVals]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // 유형 필터 변경 핸들러(캐시 기반 백엔드 필터링)
-  const handleFilterChange = useCallback(async () => {
-    try {
-      setLoading(true);
-
-      const makeParam = (arr) => (arr && arr.length > 0 ? arr.join(",") : "전체");
-
-      // 옵션 갱신(1차에 따라 2차 옵션 변경)
-      const opts = await fetchFilterOptions(start, end, "cache", {
-        고객유형: makeParam(filterVals.고객유형),
-        문의유형: makeParam(filterVals.문의유형),
-        서비스유형: makeParam(filterVals.서비스유형),
-      });
-      setFilterOptions(opts || {});
-
-      // 백엔드 캐시에서 필터링된 rows 가져오기
-      const filteredRows = await fetchUserchats(start, end, "cache", {
-        고객유형: makeParam(filterVals.고객유형),
-        고객유형_2차: makeParam(filterVals.고객유형_2차),
-        문의유형: makeParam(filterVals.문의유형),
-        문의유형_2차: makeParam(filterVals.문의유형_2차),
-        서비스유형: makeParam(filterVals.서비스유형),
-        서비스유형_2차: makeParam(filterVals.서비스유형_2차),
-      });
-
-      setUserchats(Array.isArray(filteredRows) ? filteredRows : []);
-      console.log("✅ 유형 필터 자동 적용 완료:", {
-        filterVals,
-        filteredCount: Array.isArray(filteredRows) ? filteredRows.length : 0,
-      });
-    } catch (err) {
-      console.error("❌ 유형 필터 적용 실패:", err);
-      setError("유형 필터 적용 실패: " + (err?.message || err));
-    } finally {
-      setLoading(false);
-    }
-  }, [
-    start,
-    end,
-    filterVals.고객유형,
-    filterVals.고객유형_2차,
-    filterVals.문의유형,
-    filterVals.문의유형_2차,
-    filterVals.서비스유형,
-    filterVals.서비스유형_2차,
-  ]);
-
-  // 문의량 차트 데이터
+  // ✅ 문의량 차트 데이터: filteredRows 직접 사용
   const chartData = useMemo(() => {
-    if (!Array.isArray(filteredRows) || filteredRows.length === 0) return [];
+    if (filteredRows.length === 0) return [];
 
-    console.log("🔍 chartData 계산 시작:", { filteredRowsLength: filteredRows.length, dateGroup });
-    if (dateGroup === "월간") {
+    console.log("🔍 chartData 계산 시작:", { rowsLength: filteredRows.length, dateGroup: csDateGroup });
+    if (csDateGroup === "월간") {
       const map = {};
       filteredRows.forEach((item) => {
         const d = parseTsKST(item.firstAskedAt);
@@ -572,63 +476,96 @@ function App() {
       });
       return data;
     }
-  }, [filteredRows, dateGroup]);
+  }, [filteredRows, csDateGroup]);
 
-  // 평균 응답/해결 시간 차트
-  const avgTimeChartData = useMemo(() => {
-    if (!filteredRows.length) return [];
+  // ✅ 평균 응답/해결 시간 차트: 주간/월간 각각 집계
+  const avgTimeMonthly = useMemo(() => {
+    if (filteredRows.length === 0) return [];
     const map = {};
-    filteredRows.forEach((item) => {
+    for (const item of filteredRows) {
       const d = parseTsKST(item.firstAskedAt);
-      if (!d) return;
-      const month = `${d.getFullYear()}-${d.getMonth() + 1}`;
-      if (!map[month])
-        map[month] = {
-          x축: `${d.getMonth() + 1}월`,
-          operationWaitingTime: [],
-          operationAvgReplyTime: [],
-          operationTotalReplyTime: [],
-          operationResolutionTime: [],
+      if (!d) continue;
+      const monthKey = `${d.getFullYear()}-${d.getMonth()+1}`;
+      if (!map[monthKey]) {
+        map[monthKey] = {
+          x축: `${d.getMonth()+1}월`,
+          operationWaitingTime: [], operationAvgReplyTime: [],
+          operationTotalReplyTime: [], operationResolutionTime: []
         };
-
-      if (item.operationWaitingTime != null && item.operationWaitingTime !== "") {
-        const waitingTime = timeToSec(item.operationWaitingTime);
-        if (waitingTime > 0) map[month].operationWaitingTime.push(waitingTime);
       }
-      if (item.operationAvgReplyTime != null && item.operationAvgReplyTime !== "") {
-        const avgReplyTime = timeToSec(item.operationAvgReplyTime);
-        if (avgReplyTime > 0) map[month].operationAvgReplyTime.push(avgReplyTime);
-      }
-      if (item.operationTotalReplyTime != null && item.operationTotalReplyTime !== "") {
-        const totalReplyTime = timeToSec(item.operationTotalReplyTime);
-        if (totalReplyTime > 0) map[month].operationTotalReplyTime.push(totalReplyTime);
-      }
-      if (item.operationResolutionTime != null && item.operationResolutionTime !== "") {
-        const resolutionTime = timeToSec(item.operationResolutionTime);
-        if (resolutionTime > 0) map[month].operationResolutionTime.push(resolutionTime);
-      }
-    });
-
-    const result = Object.values(map)
-      .map((m) => {
-        const avgWaitingTime = avg(m.operationWaitingTime);
-        const avgReplyTime = avg(m.operationAvgReplyTime);
-        const avgTotalReplyTime = avg(m.operationTotalReplyTime);
-        const avgResolutionTime = avg(m.operationResolutionTime);
-        return {
-          x축: m.x축,
-          operationWaitingTime: avgWaitingTime > 0 ? avgWaitingTime : null,
-          operationAvgReplyTime: avgReplyTime > 0 ? avgReplyTime : null,
-          operationTotalReplyTime: avgTotalReplyTime > 0 ? avgTotalReplyTime : null,
-          operationResolutionTime: avgResolutionTime > 0 ? avgResolutionTime : null,
-        };
-      })
-      .sort((a, b) => parseInt(a.x축.replace("월", "")) - parseInt(b.x축.replace("월", "")));
-
-    return result;
+      const pushIf = (arr, v) => { const n = timeToSec(v); if (n > 0) arr.push(n); };
+      pushIf(map[monthKey].operationWaitingTime, item.operationWaitingTime);
+      pushIf(map[monthKey].operationAvgReplyTime, item.operationAvgReplyTime);
+      pushIf(map[monthKey].operationTotalReplyTime, item.operationTotalReplyTime);
+      pushIf(map[monthKey].operationResolutionTime, item.operationResolutionTime);
+    }
+    return Object.values(map).map(m => ({
+      x축: m.x축,
+      operationWaitingTime: (avg(m.operationWaitingTime) || null),
+      operationAvgReplyTime: (avg(m.operationAvgReplyTime) || null),
+      operationTotalReplyTime: (avg(m.operationTotalReplyTime) || null),
+      operationResolutionTime: (avg(m.operationResolutionTime) || null),
+    })).sort((a,b) => parseInt(a.x축) - parseInt(b.x축));
   }, [filteredRows]);
 
-  // 통계
+  const avgTimeWeekly = useMemo(() => {
+    if (filteredRows.length === 0) return [];
+    // 월요일 시작 주차
+    const toWeekStart = (d) => {
+      const day = d.getDay();              // 0(일)~6(토)
+      const diffToMon = (day + 6) % 7;     // 월=0
+      const w = new Date(d);
+      w.setDate(d.getDate() - diffToMon);
+      w.setHours(0,0,0,0);
+      return w;
+    };
+    const map = new Map(); // key(ms) -> bucket
+    for (const item of filteredRows) {
+      const d = parseTsKST(item.firstAskedAt);
+      if (!d) continue;
+      const ws = toWeekStart(d);
+      const k = ws.getTime();
+      if (!map.has(k)) {
+        map.set(k, {
+          __wStart: ws,
+          operationWaitingTime: [], operationAvgReplyTime: [],
+          operationTotalReplyTime: [], operationResolutionTime: []
+        });
+      }
+      const b = map.get(k);
+      const pushIf = (arr, v) => { const n = timeToSec(v); if (n > 0) arr.push(n); };
+      pushIf(b.operationWaitingTime, item.operationWaitingTime);
+      pushIf(b.operationAvgReplyTime, item.operationAvgReplyTime);
+      pushIf(b.operationTotalReplyTime, item.operationTotalReplyTime);
+      pushIf(b.operationResolutionTime, item.operationResolutionTime);
+    }
+    const mmdd = (d) => `${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}`;
+    const rows = Array.from(map.values()).sort((a,b) => a.__wStart - b.__wStart).map(b => {
+      const wEnd = new Date(b.__wStart); wEnd.setDate(wEnd.getDate()+6);
+      return {
+        x축: `${mmdd(b.__wStart)}~${mmdd(wEnd)}`,
+        주레이블: `${mmdd(b.__wStart)}~${mmdd(wEnd)}`,
+        주보조레이블: "",  // 월 경계 표시용
+        월레이블: `${b.__wStart.getMonth() + 1}월`, // 월 레이블 추가
+        operationWaitingTime: (avg(b.operationWaitingTime) || null),
+        operationAvgReplyTime: (avg(b.operationAvgReplyTime) || null),
+        operationTotalReplyTime: (avg(b.operationTotalReplyTime) || null),
+        operationResolutionTime: (avg(b.operationResolutionTime) || null),
+        __wStart: b.__wStart
+      };
+    });
+    // 월 경계 라벨
+    let prev = "";
+    rows.forEach(r => {
+      const tag = `${r.__wStart.getFullYear()}-${String(r.__wStart.getMonth()+1).padStart(2,"0")}`;
+      if (tag !== prev) r.주보조레이블 = tag;
+      prev = tag;
+      delete r.__wStart;
+    });
+    return rows;
+  }, [filteredRows]);
+
+  // ✅ 통계: filteredRows 직접 사용
   const statistics = useMemo(() => {
     const totalInquiries = filteredRows.length;
 
@@ -658,19 +595,16 @@ function App() {
     };
   }, [filteredRows]);
 
-  // 문의유형별 차트
+  // ✅ 문의유형별 차트: filteredRows 직접 사용
   const inquiryTypeData = useMemo(() => {
-    if (loading || !Array.isArray(filteredRows) || filteredRows.length === 0) {
-      console.log("⏳ skip inquiryTypeData compute", { loading, filteredRowsLength: filteredRows?.length });
-      return [];
-    }
+    if (filteredRows.length === 0) return [];
 
     console.log("🔍 inquiryTypeData 계산 시작:", {
-      filteredRowsLength: filteredRows.length,
-      filterVals문의유형: filterVals.문의유형,
+      rowsLength: filteredRows.length,
+      filters문의유형: filterVals.문의유형,
     });
 
-    if (!filterVals.문의유형 || filterVals.문의유형.length === 0) {
+    if (normArr(filterVals.문의유형).length === 0) {
       const counts = {};
       filteredRows.forEach((item) => {
         let type = item.문의유형 || "";
@@ -691,7 +625,7 @@ function App() {
       filteredRows.forEach((item) => {
         let itemType = item.문의유형 || "";
         if (itemType.includes("/")) itemType = itemType.split("/")[0].trim();
-        if (filterVals.문의유형.includes(itemType)) {
+        if (normArr(filterVals.문의유형).includes(itemType)) {
           const type2 = item.문의유형_2차 || "";
           if (type2 && type2.trim() !== "") counts[type2] = (counts[type2] || 0) + 1;
         }
@@ -706,21 +640,18 @@ function App() {
         valueKeyCandidates: ["value", "건수", "count", "문의량"],
       });
     }
-  }, [filteredRows, filterVals.문의유형, loading]);
+  }, [filteredRows, filterVals.문의유형]);
 
-  // 고객유형 2차/도넛
+  // ✅ 고객유형 2차/도넛: filteredRows 직접 사용
   const customerTypeData = useMemo(() => {
-    if (loading || !Array.isArray(filteredRows) || filteredRows.length === 0) {
-      console.log("⏳ skip customerTypeData compute", { loading, filteredRowsLength: filteredRows?.length });
-      return [];
-    }
+    if (filteredRows.length === 0) return [];
 
     console.log("🔍 customerTypeData 계산 시작:", {
-      filteredRowsLength: filteredRows.length,
-      filterVals고객유형: filterVals.고객유형,
+      rowsLength: filteredRows.length,
+      filters고객유형: filterVals.고객유형,
     });
 
-    if (!filterVals.고객유형 || filterVals.고객유형.length === 0) {
+    if (normArr(filterVals.고객유형).length === 0) {
       const counts = {};
       filteredRows.forEach((item) => {
         let type = item.고객유형 || "";
@@ -741,7 +672,7 @@ function App() {
       filteredRows.forEach((item) => {
         let itemType = item.고객유형 || "";
         if (itemType.includes("/")) itemType = itemType.split("/")[0].trim();
-        if (filterVals.고객유형.includes(itemType)) {
+        if (normArr(filterVals.고객유형).includes(itemType)) {
           const type2 = item.고객유형_2차 || "";
           if (type2 && type2.trim() !== "") counts[type2] = (counts[type2] || 0) + 1;
         }
@@ -756,13 +687,10 @@ function App() {
         valueKeyCandidates: ["value", "건수", "count", "문의량"],
       });
     }
-  }, [filteredRows, filterVals.고객유형, loading]);
+  }, [filteredRows, filterVals.고객유형]);
 
   const customerDonutData = useMemo(() => {
-    if (loading || !Array.isArray(filteredRows) || filteredRows.length === 0) {
-      console.log("⏳ skip customerDonutData compute", { loading, filteredRowsLength: filteredRows?.length });
-      return [];
-    }
+    if (filteredRows.length === 0) return [];
 
     const counts = {};
     filteredRows.forEach((item) => {
@@ -791,7 +719,7 @@ function App() {
       });
     }
     return result;
-  }, [filteredRows, loading]);
+  }, [filteredRows]);
 
   // 유틸
   function timeToSec(t) {
@@ -827,42 +755,6 @@ function App() {
   }
 
   // --- 화면 ---
-  const TagChips = ({ tags }) => {
-    if (!tags) return null;
-
-    const rows = [
-      { label: "고객유형", a: tags.고객유형, b: tags.고객유형_2차 },
-      { label: "문의유형", a: tags.문의유형, b: tags.문의유형_2차 },
-      { label: "서비스유형", a: tags.서비스유형, b: tags.서비스유형_2차 },
-    ].filter(({ a, b }) => (a && a.trim()) || (b && b.trim())); // 값 있는 것만
-
-    if (!rows.length) return null;
-
-    return (
-      <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
-        {rows.map(({ label, a, b }) => {
-          const segs = [label, a, b].filter(s => s && String(s).trim());
-          const text = segs.join("/");
-          return (
-            <span
-              key={label}
-              style={{
-                backgroundColor: "#e3f2fd",
-                color: "#1976d2",
-                padding: "2px 6px",
-                borderRadius: 12,
-                fontSize: 11,
-                fontWeight: 500,
-              }}
-              title={text}
-            >
-              {text}
-            </span>
-          );
-        })}
-      </div>
-    );
-  };
 
   if (apiConnected === null) {
     return (
@@ -917,7 +809,7 @@ function App() {
           <h1 style={{ textAlign: "center", color: "#333", margin: 0 }}>📊 CS 대시보드</h1>
           <div style={{ display: "flex", gap: "12px" }}>
             <button
-              onClick={() => loadCacheData("update")}
+              onClick={() => fetchRowsWithParams("update")}
               disabled={loading}
               style={{
                 padding: "10px 20px",
@@ -946,7 +838,7 @@ function App() {
             borderRadius: "8px 8px 0 0",
           }}
         >
-          {["CS", "CSAT", "Cache"].map((t) => (
+          {["CS", "CSAT", ...(isAdmin ? ["Cache"] : [])].map((t) => (
             <button
               key={t}
               onClick={() => setActiveTab(t)}
@@ -1073,7 +965,19 @@ function App() {
             </div>
 
             {/* 유형 필터 */}
-            <FilterPanel options={filterOptions} values={filterVals} setValues={setFilterVals} />
+            <FilterPanel
+              options={{
+                고객유형: customerTypeOptions,
+                문의유형: inquiryTypeOptions,
+                서비스유형: serviceTypeOptions,
+                고객유형_2차: customerType2Options,
+                문의유형_2차: inquiryType2Options,
+                서비스유형_2차: serviceType2Options,
+                subtype_maps: subtypeMaps
+              }}
+              values={filterVals}
+              setValues={setFilterVals}
+            />
 
             {/* 차트 2열 */}
             <div
@@ -1092,14 +996,44 @@ function App() {
                   boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
                 }}
               >
+                <div style={{ 
+                  display: "flex", 
+                  alignItems: "center", 
+                  justifyContent: "space-between", 
+                  marginBottom: "16px" 
+                }}>
+                  <h3 style={{ color: "#333", fontWeight: "600", margin: 0 }}>CS 문의량</h3>
+                  <div style={{
+                    display: "inline-flex",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 8,
+                    overflow: "hidden"
+                  }}>
+                    {["주간", "월간"].map(g => (
+                      <button
+                        key={g}
+                        onClick={() => setCsDateGroup(g)}
+                        style={{
+                          padding: "6px 10px",
+                          fontSize: 12,
+                          border: "none",
+                          background: csDateGroup === g ? "#111827" : "#fff",
+                          color: csDateGroup === g ? "#fff" : "#374151",
+                          cursor: "pointer"
+                        }}
+                      >
+                        {g}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <ChartSection
                   data={chartData}
-                  label="CS 문의량"
+                  label=""
                   xLabel="x축"
                   yLabel="문의량"
                   loading={loading}
-                  dateGroup={dateGroup}
-                  onDateGroupChange={setDateGroup}
+                  dateGroup={csDateGroup}
                 />
               </div>
 
@@ -1111,13 +1045,43 @@ function App() {
                   boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
                 }}
               >
-                {avgTimeChartData.length > 0 ? (
+                {(mlDateGroup === "주간" ? avgTimeWeekly : avgTimeMonthly).length > 0 ? (
                   <>
-                    <h3 style={{ marginBottom: "16px", color: "#333", fontWeight: "600" }}>평균 응답/해결 시간</h3>
+                    <div style={{ 
+                      display: "flex", 
+                      alignItems: "center", 
+                      justifyContent: "space-between", 
+                      marginBottom: "16px" 
+                    }}>
+                      <h3 style={{ color: "#333", fontWeight: "600", margin: 0 }}>평균 응답/해결 시간</h3>
+                      <div style={{
+                        display: "inline-flex",
+                        border: "1px solid #e5e7eb",
+                        borderRadius: 8,
+                        overflow: "hidden"
+                      }}>
+                        {["주간", "월간"].map(g => (
+                          <button
+                            key={g}
+                            onClick={() => setMlDateGroup(g)}
+                            style={{
+                              padding: "6px 10px",
+                              fontSize: 12,
+                              border: "none",
+                              background: mlDateGroup === g ? "#111827" : "#fff",
+                              color: mlDateGroup === g ? "#fff" : "#374151",
+                              cursor: "pointer"
+                            }}
+                          >
+                            {g}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                     <div style={{ fontSize: "12px", color: "#999", marginBottom: "16px" }}>y축 단위: 분(min)</div>
 
                     <MultiLineChartSection
-                      data={avgTimeChartData}
+                      data={mlDateGroup === "주간" ? avgTimeWeekly : avgTimeMonthly}
                       lines={[
                         { key: "operationWaitingTime", color: "#007bff", label: "첫응답시간" },
                         { key: "operationAvgReplyTime", color: "#28a745", label: "평균응답시간" },
@@ -1127,7 +1091,7 @@ function App() {
                       label=""
                       xLabel="x축"
                       loading={loading}
-                      dateGroup={"월간"}
+                      dateGroup={mlDateGroup}
                     />
                   </>
                 ) : (
@@ -1156,12 +1120,12 @@ function App() {
                 >
                   <h3 style={{ marginBottom: "16px", color: "#333", fontWeight: "600" }}>
                     문의유형별 분포
-                    {filterVals.문의유형?.length > 0 && ` (${filterVals.문의유형.join(", ")} > 세부분류)`}
+                    {normArr(filterVals.문의유형).length > 0 && ` (${normArr(filterVals.문의유형).join(", ")} > 세부분류)`}
                   </h3>
                   <ChartSection
                     data={inquiryTypeData}
                     label=""
-                    xLabel={!filterVals.문의유형 || filterVals.문의유형.length === 0 ? "문의유형" : "문의유형_2차"}
+                    xLabel={normArr(filterVals.문의유형).length === 0 ? "문의유형" : "문의유형_2차"}
                     yLabel="문의량"
                     loading={loading}
                     chartType="horizontalBar"
@@ -1171,7 +1135,7 @@ function App() {
                 </div>
               )}
 
-              {(!filterVals.고객유형 || filterVals.고객유형.length === 0) ? (
+              {normArr(filterVals.고객유형).length === 0 ? (
                 customerDonutData.length > 0 && (
                   <div
                     style={{
@@ -1295,12 +1259,12 @@ function App() {
                   >
                     <h3 style={{ marginBottom: "16px", color: "#333", fontWeight: "600" }}>
                       고객유형별 분포
-                      {filterVals.고객유형?.length > 0 && ` (${filterVals.고객유형.join(", ")} > 세부분류)`}
+                      {normArr(filterVals.고객유형).length > 0 && ` (${normArr(filterVals.고객유형).join(", ")} > 세부분류)`}
                     </h3>
                     <ChartSection
                       data={customerTypeData}
                       label=""
-                      xLabel={!filterVals.고객유형 || filterVals.고객유형.length === 0 ? "고객유형" : "고객유형_2차"}
+                      xLabel={normArr(filterVals.고객유형).length === 0 ? "고객유형" : "고객유형_2차"}
                       yLabel="문의량"
                       loading={loading}
                       chartType="horizontalBar"
@@ -1311,12 +1275,46 @@ function App() {
                 )
               )}
             </div>
+
+            {/* 처리유형 분석 섹션 */}
+            <div style={{ marginTop: 20 }}>
+              <div style={{
+                display:"grid",
+                gridTemplateColumns:"1fr 1fr",
+                gap:"16px",
+                alignItems:"stretch",
+                marginBottom:"24px"
+              }}>
+                <div>
+                  <HandlingTypeDonut rows={filteredRows} width={520} height={320} />
+                </div>
+                <div>
+                  {/* 2시간 단위 구간: 0~120 / 120~240 / 240~360 / 360~480 / 480~600 / 600~720 / 720+ */}
+                  <SLAStackBar
+                    rows={filteredRows}
+                    width={520}
+                    height={300}
+                    bins={[0,120,240,360,480,600,720,Infinity]}
+                  />
+                </div>
+              </div>
+
+              {/* ▶ 처리유형별 처리시간 분포(겹쳐 그린 커브, x=분, y=건수) */}
+              <div style={{ marginBottom: "24px" }}>
+                <HandlingLeadtimeDensity
+                  rows={filteredRows}
+                  bins={40}
+                  smoothWindow={2}
+                  yBreak={{ from: 10, to: 40, gap: 12 }}   // ⬅️ 0~10 크게, 10~40 절단, 위는 압축
+                />
+              </div>
+            </div>
           </>
         )}
 
         {/* CSAT 탭 */}
         {activeTab === "CSAT" && (
-          <>
+          <Suspense fallback={<div style={{padding:20}}>로딩 중...</div>}>
             {csatData && csatData.status === "success" ? (
               <>
                 <CSatChartSection csatSummary={csatData.요약} totalResponses={csatData.총응답수} />
@@ -1325,98 +1323,9 @@ function App() {
                   <CSatTypeChartSection typeScores={csatData.유형별} typeLabel="유형별" />
                 )}
 
-                {/* CSAT 텍스트 분석 */}
-                {csatTextWithTags && csatTextWithTags.status === "success" && (
-                  <div
-                    style={{
-                      backgroundColor: "white",
-                      padding: "20px",
-                      borderRadius: "12px",
-                      boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
-                      marginBottom: "20px",
-                    }}
-                  >
-                    <h3 style={{ marginBottom: "16px", color: "#333", fontWeight: "600" }}>CSAT 상세 의견</h3>
+                {/* CSAT 상세 의견 */}
+                <CSatCommentsSection csatTextWithTags={csatTextWithTags} />
 
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
-                      {/* A-3 */}
-                      <div>
-                        <h4 style={{ marginBottom: "12px", color: "#007bff", fontWeight: "600" }}>
-                          A-3 응답 ({csatTextWithTags.comment_3?.total || csatTextWithTags.comment_3?.data?.length || 0}건)
-                        </h4>
-                        <div
-                          style={{
-                            maxHeight: "300px",
-                            overflowY: "auto",
-                            border: "1px solid #e0e0e0",
-                            borderRadius: "8px",
-                            padding: "12px",
-                          }}
-                        >
-                          {Array.isArray(csatTextWithTags.comment_3?.data) && csatTextWithTags.comment_3.data.length > 0
-                            ? csatTextWithTags.comment_3.data.map((item, index) => (
-                              <div
-                                key={`${item.userId || "u"}-${item.firstAskedAt || index}-${index}`}
-                                style={{
-                                  padding: "8px",
-                                  marginBottom: "8px",
-                                  backgroundColor: "#f8f9fa",
-                                  borderRadius: "6px",
-                                  borderLeft: "3px solid #007bff",
-                                }}
-                              >
-                                <div style={{ fontSize: "12px", color: "#666", marginBottom: "4px" }}>
-                                  {new Date(item.firstAskedAt ?? item.date ?? Date.now()).toLocaleDateString()} | User: {item.userId ?? item.user ?? item.personId ?? item.id ?? "-"}
-                                  {typeof item.score === "number" && ` | Score: ${item.score}`}
-                                </div>
-                                <TagChips tags={item.tags} />
-                                <div style={{ fontSize: "14px", lineHeight: "1.4" }}>{item.text ?? item.comment ?? item.의견 ?? item.코멘트 ?? ""}</div>
-                              </div>
-                            ))
-                            : <div style={{ color: "#666", fontStyle: "italic" }}>데이터가 없습니다.</div>}
-                        </div>
-                      </div>
-
-                      {/* A-6 */}
-                      <div>
-                        <h4 style={{ marginBottom: "12px", color: "#28a745", fontWeight: "600" }}>
-                          A-6 응답 ({csatTextWithTags.comment_6?.total || csatTextWithTags.comment_6?.data?.length || 0}건)
-                        </h4>
-                        <div
-                          style={{
-                            maxHeight: "300px",
-                            overflowY: "auto",
-                            border: "1px solid #e0e0e0",
-                            borderRadius: "8px",
-                            padding: "12px",
-                          }}
-                        >
-                          {Array.isArray(csatTextWithTags.comment_6?.data) && csatTextWithTags.comment_6.data.length > 0
-                            ? csatTextWithTags.comment_6.data.map((item, index) => (
-                              <div
-                                key={`${item.userId || "u"}-${item.firstAskedAt || index}-${index}`}
-                                style={{
-                                  padding: "8px",
-                                  marginBottom: "8px",
-                                  backgroundColor: "#f8f9fa",
-                                  borderRadius: "6px",
-                                  borderLeft: "3px solid #28a745",
-                                }}
-                              >
-                                <div style={{ fontSize: "12px", color: "#666", marginBottom: "4px" }}>
-                                  {new Date(item.firstAskedAt ?? item.date ?? Date.now()).toLocaleDateString()} | User: {item.userId ?? item.user ?? item.personId ?? item.id ?? "-"}
-                                  {typeof item.score === "number" && ` | Score: ${item.score}`}
-                                </div>
-                                <TagChips tags={item.tags} />
-                                <div style={{ fontSize: "14px", lineHeight: "1.4" }}>{item.text ?? item.comment ?? item.의견 ?? item.코멘트 ?? ""}</div>
-                              </div>
-                            ))
-                            : <div style={{ color: "#666", fontStyle: "italic" }}>데이터가 없습니다.</div>}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
               </>
             ) : (
               <div
@@ -1431,12 +1340,12 @@ function App() {
                 {csatData ? "CSAT 데이터 로드 중..." : "CSAT 데이터를 불러오는 중입니다..."}
               </div>
             )}
-          </>
+          </Suspense>
         )}
 
         {/* Cache 탭 */}
         {activeTab === "Cache" && (
-          <>
+          <Suspense fallback={<div style={{padding:20}}>로딩 중...</div>}>
             <CacheStatusSection start={start} end={end} />
             <div
               style={{
@@ -1448,23 +1357,26 @@ function App() {
               }}
             >
               <h3 style={{ margin: "0 0 20px 0", color: "#333" }}>캐시 관리</h3>
-              <button
-                onClick={() => loadCacheData("refresh")}
-                disabled={loading}
-                style={{
-                  padding: "12px 24px",
-                  backgroundColor: "#dc3545",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "6px",
-                  cursor: loading ? "not-allowed" : "pointer",
-                  fontSize: "16px",
-                  fontWeight: "bold",
-                  boxShadow: "0 2px 4px rgba(0,0,0,0.1)",
-                }}
-              >
-                {loading ? "📥 갱신 중..." : "📥 전체 데이터 갱신"}
-              </button>
+              {isAdmin && (
+                <button
+                  onClick={() => {/* 더 이상 프론트에서 호출하지 않음 (관리자만 서버에서) */}}
+                  disabled
+                  style={{
+                    padding: "12px 24px",
+                    backgroundColor: "#dc3545",
+                    color: "white",
+                    border: "none",
+                    borderRadius: "6px",
+                    cursor: "not-allowed",
+                    fontSize: "16px",
+                    fontWeight: "bold",
+                    boxShadow: "0 2px 4px rgba(0,0,0,0.1)",
+                    opacity: 0.5,
+                  }}
+                >
+                  관리자 전용 (서버에서 실행)
+                </button>
+              )}
               <p
                 style={{
                   margin: "15px 0 0 0",
@@ -1476,7 +1388,7 @@ function App() {
                 ⚠️ 주의: 기존 캐시를 완전히 삭제하고 전체 데이터를 새로 수집합니다
               </p>
             </div>
-          </>
+          </Suspense>
         )}
       </div>
     </div>
