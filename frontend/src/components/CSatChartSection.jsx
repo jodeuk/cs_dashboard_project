@@ -18,7 +18,8 @@ export default function CSatChartSection({ csatSummary, totalResponses }) {
 
   // 응답자 / 미응답자 데이터 변환 + 응답률 계산
   const chartData = csatSummary.map(item => {
-    const responseRate = totalResponses > 0 ? Math.round((item.응답자수 / totalResponses) * 100) : 0;
+    const denom = (typeof item.대상자수 === "number" ? item.대상자수 : totalResponses) || 0; // ✅ 대상자수 우선
+    const responseRate = denom > 0 ? Math.round((item.응답자수 / denom) * 100) : 0;
     return {
       // Y축엔 코드만 (예: "A-1")
       항목: item.항목,
@@ -26,10 +27,14 @@ export default function CSatChartSection({ csatSummary, totalResponses }) {
       질문: CSAT_QUESTIONS?.[item.항목] || "",
       평균점수: item.평균점수,
       응답자: item.응답자수,
-      미응답자: totalResponses - item.응답자수,
+      미응답자: Math.max(0, denom - item.응답자수),  // ✅ 대상자수 기반
       응답률: `${responseRate}%`,
     };
   });
+
+  // (추가) 항목별 평균점수 맵
+  const avgByItem = Object.fromEntries(chartData.map(d => [d.항목, d.평균점수]));
+  const fmtAvg = (x) => (typeof x === "number" && isFinite(x) ? x.toFixed(2) : "-");
 
   return (
     <div style={{ backgroundColor: "white", padding: "20px", borderRadius: "8px", marginBottom: "20px" }}>
@@ -38,8 +43,13 @@ export default function CSatChartSection({ csatSummary, totalResponses }) {
         <BarChart data={chartData} layout="vertical" margin={{ top: 20, right: 20, left: 40, bottom: 20 }}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis type="number" />
-          {/* Y축엔 코드만 (콤팩트) */}
-          <YAxis type="category" dataKey="항목" width={60} />
+          {/* Y축엔 코드 + (평균점수) */}
+          <YAxis
+            type="category"
+            dataKey="항목"
+            width={140}  // ← 길어지므로 약간 넉넉히
+            tickFormatter={(v) => `${v} (${fmtAvg(avgByItem[v])}점)`}
+          />
           {/* 툴팁에 전체 질문 + 점수 노출 */}
           <Tooltip
             formatter={(value, name) => {

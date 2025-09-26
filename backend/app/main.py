@@ -96,21 +96,23 @@ def admin_guard(x_admin_token: str = Header(None)):
     return True
 
 # ---- 2-3. NaN/Inf sanitize 유틸 ----
-def _sanitize_json(obj):
-    if isinstance(obj, float):
-        return obj if math.isfinite(obj) else None
-    try:
-        # numpy float 케이스
-        if isinstance(obj, (np.floating,)):
-            val = float(obj)
-            return val if math.isfinite(val) else None
-    except Exception:
-        pass
-    if isinstance(obj, dict):
-        return {k: _sanitize_json(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_sanitize_json(v) for v in obj]
-    return obj
+def _sanitize_json(o):
+    # float / numpy float -> 0.0 for NaN/Inf
+    if isinstance(o, float):
+        if math.isnan(o) or math.isinf(o): return 0.0
+        return float(o)
+    if isinstance(o, (np.floating,)):
+        v = float(o)
+        return 0.0 if (math.isnan(v) or math.isinf(v)) else v
+    # numpy int -> int
+    if isinstance(o, (np.integer,)):
+        return int(o)
+    # 컨테이너 순회
+    if isinstance(o, dict):
+        return {k: _sanitize_json(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_sanitize_json(v) for v in o]
+    return o
 
 # ---- 2-1. Pydantic 모델 ----
 # CSAT 업로드 관련 모델 제거됨
@@ -668,17 +670,38 @@ async def csat_analysis(start: str = Query(...), end: str = Query(...)):
 
         # ---- 기본 요약 (A-1/2/4/5) ----
         score_cols = [c for c in ["A-1", "A-2", "A-4", "A-5"] if c in csat_df.columns]
+
+        # ✅ 공통 분모(대상자수) = 설문 워크플로우 시작자 수로 산정
+        raw = csat_df.get("wf_768201_started")
+        elig = pd.Series(raw if raw is not None else False, index=csat_df.index)
+        elig = (elig.replace({
+            True: True, False: False,
+            "True": True, "False": False,
+            "true": True, "false": False,
+            "1": True, "0": False, 1: True, 0: False
+        }).fillna(False).astype(bool))
+        elig_count = int(elig.sum())
+
         summary_list = []
         for col in score_cols:
             series = pd.to_numeric(csat_df[col], errors="coerce")
             valid = series.dropna()
             avg_score = float(valid.mean()) if len(valid) > 0 and np.isfinite(valid.mean()) else 0.0
+
+            answered_this = int(valid.count())
+            non_responded = max(0, elig_count - answered_this)
+
             summary_list.append({
                 "항목": col,
                 "평균점수": round(avg_score, 2),
-                "응답자수": int(valid.count()),
+                "응답자수": answered_this,
+                "대상자수": elig_count,        # ✅ 추가
+                "미응답자수": non_responded,    # ✅ 추가
                 "라벨": f"{col} ({round(avg_score, 2)}점)",
             })
+
+        # ✅ 총응답수 = 공통 분모(대상자수)
+        total_responses = int(elig_count)
 
         # ---- 유형별 집계(가능할 때만) : 캐시만 사용, 조인 실패해도 스킵 ----
         type_scores = {}
@@ -705,14 +728,13 @@ async def csat_analysis(start: str = Query(...), end: str = Query(...)):
                     enriched = pd.DataFrame()
 
                 if enriched is not None and not enriched.empty:
-                    type_scores = build_csat_type_scores(enriched)
+                    scores = build_csat_type_scores(enriched)
+                    type_scores = _sanitize_json(scores)   # ✅ NaN/Inf/numpy 스칼라 전부 정리
         except Exception as e:
             print(f"[CSAT] 유형별 집계 스킵: {type(e).__name__}: {e}")
             type_scores = {}
 
         # ---- 최종 응답 ----
-        # 총응답수는 전체 CSAT 설문 대상자 수 (각 항목별 최대 응답자 수)
-        total_responses = max([item["응답자수"] for item in summary_list], default=0) if summary_list else 0
         
         resp = {
             "status": "success",
@@ -722,10 +744,9 @@ async def csat_analysis(start: str = Query(...), end: str = Query(...)):
             "comments": comments_payload,
         }
 
-        # 직렬화 확인
-        import json
-        json.dumps(resp)
-        return resp
+        # ✅ NaN/Inf/numpy 스칼라 전부 정리
+        safe_payload = _sanitize_json(resp)
+        return JSONResponse(content=safe_payload)
 
     except Exception as e:
         print(f"[CSAT] 전체 처리 실패: {type(e).__name__}: {e}")

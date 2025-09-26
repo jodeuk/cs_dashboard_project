@@ -563,17 +563,17 @@ class ChannelTalkAPI:
     # ▼ 신규: 메시지 배열에서 CSAT 설문 추출
     def extract_csat_from_messages(self, msgs: List[Dict], allowed_trigger_ids: Optional[set] = None) -> Dict:
         """
-        반환 예시:
-        {
-          "A-1": 4, "A-2": 3, "comment_3": "텍스트",
-          "A-4": 4, "A-5": 4, "comment_6": "텍스트",
-          "csatSubmittedAt": "2025-08-07T16:47:45+09:00",
-          "personId": "person_123"
-        }
+        ...
         """
         result = {}
         latest_submit_ts = None
         person_id = None
+
+        # ▶ 분모/분자 플래그 초기화
+        result.setdefault("wf_768201_started", False)  # 설문 '시작자'(대상자)
+        result.setdefault("has_score_any", False)      # A-1/2/4/5 중 하나라도 응답
+
+        allowed_set = set(map(str, allowed_trigger_ids or []))
 
         def norm_label(label: str) -> Optional[str]:
             s = self._clean_label(label)
@@ -599,36 +599,50 @@ class ChannelTalkAPI:
             return None
 
         for m in msgs:
-            # ▼ 추가: triggerId(= workflow 트리거) 우선 필터
-            if allowed_trigger_ids:
-                log = m.get("log") or {}
-                trig_ok = (log.get("triggerType") == "workflow" and str(log.get("triggerId")) in allowed_trigger_ids)
+            log = m.get("log") or {}
+            wf = (m.get("workflow") or {})
+            wf_id = str(wf.get("id") or "")
+            trig_type = log.get("triggerType")
+            trig_id = str(log.get("triggerId")) if log.get("triggerId") is not None else ""
+            action = (log.get("action") or log.get("type") or "").lower()
 
-                # 보수적으로, message.workflow.id 도 허용 (둘 중 하나라도 매치되면 통과)
-                wf = (m.get("workflow") or {}).get("id")
-                wf_ok = (wf is not None and str(wf) in allowed_trigger_ids)
-
-                if not (trig_ok or wf_ok):
-                    continue
-
-            # personId 추출 (personType: "user"인 메시지에서만)
+            # personId 추출 (user 메시지 기준)
             if person_id is None and m.get("personType") == "user":
                 person_id = m.get("personId") or m.get("person", {}).get("id")
 
-            # form 구조 처리
-            form = m.get("form")
-            if form:
-                inputs = form.get("inputs") or []
-                submitted_at = form.get("submittedAt")
-                if submitted_at:
-                    latest_submit_ts = max(latest_submit_ts or submitted_at, submitted_at)
+            # === [핵심] '설문 시작' 넓게 감지 ===
+            # 1) 로그 트리거: action 이 start* 류
+            if trig_type == "workflow" and (not allowed_set or trig_id in allowed_set) and action.startswith("start"):
+                result["wf_768201_started"] = True
+            # 2) 메시지에 workflow.id 가 목표 ID
+            if wf_id and (not allowed_set or wf_id in allowed_set):
+                result["wf_768201_started"] = True
 
-                # 👉 워크플로우 위치로 문항 그룹 추론 (라벨이 없거나 애매할 때 사용)
-                wf = (m.get("workflow") or {})
-                action_idx = wf.get("actionIndex")
-                # actionIndex: 1(1~3문항), 2(4~6문항) 패턴 대응
-                in_first_group = (action_idx in (0, 1))   # 1~3
-                in_second_group = (action_idx in (2, 3))  # 4~6
+            form = m.get("form")
+            inputs = (form or {}).get("inputs") or []
+            # 3) CSAT 바인딩 키가 포함된 폼이면 '시작'으로 간주 (점수 미응답이어도 대상자)
+            has_csat_input = any((inp.get("bindingKey") or "").startswith("userChat.profile.csat") for inp in inputs)
+            if has_csat_input:
+                result["wf_768201_started"] = True
+
+            # --- 제출 시각 (있으면 최신값 유지)
+            submitted_at = (form or {}).get("submittedAt")
+            if submitted_at:
+                latest_submit_ts = max(latest_submit_ts or submitted_at, submitted_at)
+
+            # === [완화된 파싱 게이트] ===
+            # allowed_trigger_ids 가 주어졌더라도,
+            # - 트리거ID 매치 OR workflow.id 매치 OR CSAT 입력 폼 포함 이면 파싱 허용
+            parse_ok = True
+            if allowed_set:
+                parse_ok = (trig_type == "workflow" and trig_id in allowed_set) or (wf_id in allowed_set) or has_csat_input
+            if not parse_ok:
+                continue
+
+            # === 폼 입력 → 라벨 매핑(기존 로직 유지) ===
+            if form:
+                in_first_group  = wf.get("actionIndex") in (0, 1)
+                in_second_group = wf.get("actionIndex") in (2, 3)
 
                 for inp in inputs:
                     original_label = inp.get("label")
@@ -636,57 +650,56 @@ class ChannelTalkAPI:
                     val = inp.get("value")
                     bk = (inp.get("bindingKey") or "").strip()
 
-                    # === Fallback 1: 라벨 미해석 & 코멘트 필드이면 actionIndex로 comment_3/6 강제 매핑
+                    # Fallback: 코멘트 라벨 추정
+                    if not label and bk == "userChat.profile.csat":
+                        pass  # 점수 문항 추정은 위험 → 스킵
                     if not label and bk == "userChat.profile.csatComment":
-                        if in_first_group:
-                            label = "comment_3"
-                        elif in_second_group:
-                            label = "comment_6"
+                        label = "comment_3" if in_first_group else "comment_6" if in_second_group else None
 
-                    # === Fallback 2: 라벨 미해석 & singleSelect(점수)인데 그룹으로 추정 가능
-                    if not label and inp.get("type") == "singleSelect" and bk == "userChat.profile.csat":
-                        # 같은 메시지 블록 내 점수 항목의 순서로 1/2/4/5를 추정하기엔 위험 → 점수는 스킵(기존 로직 유지)
-                        pass
-
-                    # 디버깅: 원본 레이블과 매핑된 레이블 출력
                     if original_label and val:
                         print(f"[CSAT_DEBUG] 원본: '{original_label}' → 매핑: '{label}' → 값: '{val}'")
-                    
+
                     if not label:
                         continue
-                        
+
                     if label.startswith("A-"):
                         try:
                             result[label] = int(val) if val is not None else None
                         except Exception:
                             result[label] = None
+                        if label in ("A-1","A-2","A-4","A-5"):
+                            if val is not None and str(val).strip() != "":
+                                try:
+                                    int(val)
+                                    result["has_score_any"] = True
+                                except Exception:
+                                    pass
                     elif label.startswith("comment_"):
                         if label not in result:
                             result[label] = []
                         if isinstance(val, str) and val.strip():
                             result[label].append(val.strip())
 
+        # 제출 ISO(KST)
         if latest_submit_ts:
             try:
-                # API timestamp(ms) → ISO with KST
                 kst = timezone(timedelta(hours=9))
                 dt = datetime.fromtimestamp(latest_submit_ts/1000, tz=kst)
                 result["csatSubmittedAt"] = dt.isoformat()
             except Exception:
                 pass
-        
-        # personId 추가
+
         if person_id:
             result["personId"] = person_id
-        
-        # comment 배열을 문자열로 변환 (여러 개인 경우 첫 번째 것만 사용)
+
+        # comment 배열 → 문자열
         for key in ["comment_3", "comment_6"]:
             if key in result:
                 if isinstance(result[key], list):
                     result[key] = result[key][0].strip() if result[key] else None
                 elif isinstance(result[key], str):
                     result[key] = result[key].strip() or None
-        
+
         return result
 
     # ▼ 신규: CSAT 데이터가 있는 userChat만 필터링
@@ -1050,25 +1063,15 @@ async def build_and_cache_csat_rows(start_date: str, end_date: str) -> int:
                 msgs = await channel_api.get_messages_by_chat(chat_id, limit=500, sort_order="desc")
                 # ✅ CSAT 설문 워크플로우(768201)만 파싱 (잡음 제거)
                 cs = channel_api.extract_csat_from_messages(msgs, allowed_trigger_ids={"768201"})
-                if not cs:
-                    print(f"[CSAT] {chat_id}: CSAT 데이터 없음")
+                # ✅ 768201을 시작한 건은 점수 제출 여부와 무관하게 저장 대상
+                if not cs or not cs.get("wf_768201_started"):
                     continue
-                print(f"[CSAT] {chat_id}: CSAT 데이터 발견 - {list(cs.keys())}")
-                
-                # 디버깅: 실제 메시지에서 triggerId 확인
-                for m in msgs:
-                    log = m.get("log") or {}
-                    trigger_id = log.get("triggerId")
-                    workflow_id = (m.get("workflow") or {}).get("id")
-                    if trigger_id or workflow_id:
-                        print(f"[CSAT] {chat_id}: triggerId={trigger_id}, workflowId={workflow_id}")
-                        break
-                
+
                 rows.append({
                     "firstAskedAt": asked_at,
                     "userId": user_id,
                     "userChatId": chat_id,
-                    "personId": cs.get("personId"),  # personId 추가
+                    "personId": cs.get("personId"),
                     "A-1": cs.get("A-1"),
                     "A-2": cs.get("A-2"),
                     "comment_3": cs.get("comment_3"),
@@ -1076,7 +1079,10 @@ async def build_and_cache_csat_rows(start_date: str, end_date: str) -> int:
                     "A-5": cs.get("A-5"),
                     "comment_6": cs.get("comment_6"),
                     "csatSubmittedAt": cs.get("csatSubmittedAt"),
-                    "csatDate": pd.to_datetime(cs.get("csatSubmittedAt"), errors="coerce")  # ✅ 집계 기준
+                    "csatDate": pd.to_datetime(cs.get("csatSubmittedAt"), errors="coerce"),
+                    # 👉 공통 분모 계산용 플래그 저장
+                    "wf_768201_started": bool(cs.get("wf_768201_started")),
+                    "has_score_any": bool(cs.get("has_score_any")),
                 })
             except Exception as e:
                 print(f"[CSAT] chatId={chat_id} 파싱 실패: {e}")
@@ -1091,29 +1097,30 @@ async def build_and_cache_csat_rows(start_date: str, end_date: str) -> int:
         # 6) 월별로 쪼개서 저장 (userchats 캐시와 동일 정책)
         csat_df = pd.DataFrame(rows)
 
-        # CSAT 캐시 레코드 컬럼 보장(디버그 편의)
-        need = ["firstAskedAt","userId","userChatId","comment_3","comment_6","A-1","A-2","A-4","A-5","csatSubmittedAt","personId"]
-        # 보장
-        for c in ["firstAskedAt","userId","userChatId","comment_3","comment_6","A-1","A-2","A-4","A-5","csatSubmittedAt","personId","csatDate"]:
-            if c not in csat_df.columns:
-                csat_df[c] = None
-        
-        csat_df["firstAskedAt"] = pd.to_datetime(csat_df["firstAskedAt"], errors="coerce")
-        # ✅ 집계/버킷 기준: 제출일
-        csat_df["csatDate"] = pd.to_datetime(csat_df["csatDate"], errors="coerce")
+        # === 기존 buggy 블록 지우고 아래로 교체 ===
+        # 1) 두 날짜 컬럼을 각각 KST naive로 정규화
+        first_dt = pd.to_datetime(csat_df["firstAskedAt"], errors="coerce")
+        if getattr(first_dt.dt, "tz", None) is not None:
+            first_dt = first_dt.dt.tz_convert("Asia/Seoul").dt.tz_localize(None)
 
-        # 7) 월별로 쪼개서 저장
-        csat_df["month"] = csat_df["csatDate"].dt.to_period("M").astype(str)
+        # csatSubmittedAt에서 만든 csatDate는 KST(+09:00) tz-aware 문자열일 수 있음
+        # → utc=True로 파싱 후 KST로 변환, tz 제거
+        csat_dt = pd.to_datetime(csat_df["csatDate"], errors="coerce", utc=True)
+        csat_dt = csat_dt.dt.tz_convert("Asia/Seoul").dt.tz_localize(None)
+
+        # 2) 제출일 우선, 없으면 firstAskedAt
+        csat_df["bucketDate"] = csat_dt.fillna(first_dt)
+
+        # 3) 버킷 없는 행 제외 후 month 생성
+        csat_df = csat_df[csat_df["bucketDate"].notna()].copy()
+        csat_df["month"] = csat_df["bucketDate"].dt.to_period("M").astype(str)
         total_saved = 0
         for month, mdf in csat_df.groupby("month"):
-            mdf = mdf.drop(columns=["month"])
+            mdf = mdf.drop(columns=["month", "bucketDate"])
             key = f"csat_{month}"
             meta = {"month": month, "range": [start_date, end_date], "api_fetch": True, "kind": "csat"}
-            ok = server_cache.save_data(key, mdf, meta)
-            if ok:
-                total_saved += len(mdf)
-                print(f"[CSAT] {month} 저장 완료: {len(mdf)} rows")
-        
+            server_cache.save_data(key, mdf, meta)
+            total_saved += len(mdf)   # ✅ 누적 저장 수 반영
         print(f"[CSAT] 총 {total_saved} rows 저장 완료")
         return total_saved
 
@@ -1378,54 +1385,67 @@ def build_csat_type_scores(enriched_df: pd.DataFrame):
     result = {}
 
     def _group_payload(df, label_col, score_col):
-        # 툴팁용 계산 방식을 그대로 사용
-        def calculate_group_averages(df, label_col, score_col):
-            result = {}
-            for label_val in df[label_col].unique():
-                series = pd.to_numeric(df[df[label_col] == label_val][score_col], errors='coerce')
-                valid = series.dropna()
-                if len(valid) > 0:
-                    avg = valid.mean()
-                    if pd.notna(avg) and np.isfinite(avg):
-                        result[label_val] = float(avg)
-                    else:
-                        result[label_val] = 0.0
-                else:
-                    result[label_val] = 0.0
-            return result
+        # --- 1) wf_768201_started를 견고한 bool 시리즈로 정규화 ---
+        raw = df["wf_768201_started"] if "wf_768201_started" in df.columns else pd.Series(False, index=df.index)
+        elig = pd.Series(raw, index=df.index)  # 인덱스 정렬
+        elig = (elig
+                .replace({True: True, False: False,
+                          'True': True, 'False': False,
+                          'true': True, 'false': False,
+                          '1': True, '0': False, 1: True, 0: False})
+                .fillna(False)
+                .astype(bool))
 
-        # 응답자수 집계 (기존 방식 유지)
-        tmp = df.copy()
-        tmp[score_col] = pd.to_numeric(tmp[score_col], errors="coerce")
-        tmp = tmp.dropna(subset=[label_col, score_col])
-        if tmp.empty:
-            return []
-        
-        # 집계: 응답자수 + userIds(고유)
-        g = (tmp.groupby(label_col)
-                .agg(응답자수=(score_col, "count"),
-                     userIds=("userId", lambda x: sorted(set(x))))
-                .reset_index())
-        
-        # 전체 데이터에서 계산한 평균점수 매핑
-        averages = calculate_group_averages(df, label_col, score_col)
-        for idx, row in g.iterrows():
-            g.loc[idx, '평균점수'] = averages.get(row[label_col], 0.0)
-        
-        # 디버깅: 평균점수 계산 과정 확인
-        for idx, row in g.iterrows():
-            label_val = row[label_col]
-            print(f"  - {label_col}={label_val}: {row['응답자수']}개 데이터, 평균점수={row['평균점수']}")
-            if label_val in averages:
-                print(f"    전체 데이터에서 계산된 평균: {averages[label_val]}")
-        
-        # 과도한 payload 방지: userIds는 최대 50개만 제공(필요시 확대)
-        g["userIds"] = g["userIds"].apply(lambda li: li[:50])
-        # 막대 차트에는 응답자수만 표시, 평균점수는 툴팁용으로만 유지
-        g["막대값"] = g["응답자수"]  # 막대는 응답자수로 표시
-        # 결과 dict
-        records = g.sort_values("응답자수", ascending=False).to_dict(orient="records")
-        return records
+        # 이 문항 값만 숫자화 (응답 유무 판단용)
+        tmp = pd.to_numeric(df[score_col], errors="coerce")
+
+        records = []
+        # dropna=False 로 그룹핑해야 NaN 라벨(빈 값)도 따로 집계 가능
+        for label_val, sub in df.groupby(label_col, dropna=False):
+            sub_idx = sub.index
+
+            # --- 2) 공통 분모: 설문 시작자 수 (해당 그룹 범위로 인덱스 맞춰 합산) ---
+            denom = int(elig.reindex(sub_idx).sum())
+
+            # --- 3) 문항별 응답자수: 이 문항에 실제 값이 있는 사람 수 ---
+            answered_this = int(tmp.reindex(sub_idx).notna().sum())
+
+            # --- 4) 문항별 미응답자수 ---
+            non_responded = max(0, denom - answered_this)
+
+            # 디버그 로그
+            print(f"[CSAT_GRP] {label_col}={label_val} denom={denom} answered_this({score_col})={answered_this}")
+
+            # 평균점수(문항별) 계산
+            series = pd.to_numeric(sub[score_col], errors='coerce').dropna()
+            avg = float(series.mean()) if len(series) else 0.0
+            if not np.isfinite(avg):
+                avg = 0.0
+
+            user_ids = sub.get("userId")
+            user_ids = sorted(set(user_ids.dropna().astype(str).tolist()))[:50] if user_ids is not None else []
+
+            records.append({
+                label_col: label_val,
+                "평균점수": avg,
+                "userIds": user_ids,
+
+                # ✅ 공통 분모 + 문항별 응답/미응답
+                "대상자수": denom,
+                "응답자수": answered_this,
+                "미응답자수": non_responded,
+                "막대값": answered_this,  # 차트 막대 길이 = 문항별 응답자수
+            })
+
+        # 안전장치
+        for r in records:
+            r["평균점수"] = float(np.nan_to_num(r["평균점수"], nan=0.0, posinf=0.0, neginf=0.0))
+            r["응답자수"] = int(np.nan_to_num(r["응답자수"], nan=0, posinf=0, neginf=0))
+            r["미응답자수"] = int(np.nan_to_num(r["미응답자수"], nan=0, posinf=0, neginf=0))
+            r["대상자수"] = int(np.nan_to_num(r["대상자수"], nan=0, posinf=0, neginf=0))
+            r["막대값"]   = int(np.nan_to_num(r["막대값"],   nan=0, posinf=0, neginf=0))
+
+        return sorted(records, key=lambda r: r["응답자수"], reverse=True)
 
     for label in ["문의유형", "고객유형", "서비스유형"]:
         result[label] = {}

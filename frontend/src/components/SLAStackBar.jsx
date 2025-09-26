@@ -1,5 +1,5 @@
 // components/SLAStackBar.jsx
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect, useRef } from "react";
 
 // HH:MM:SS | MM:SS | number(분/초) → 분
 const toMinutes = (v) => {
@@ -60,12 +60,36 @@ export default function SLAStackBar({
   // 예시처럼 0~240 / 240~480 / 480~720 / 720~∞ (4시간 단위)
   // 원하면 2시간 단위로 바꾸려면: bins=[0,120,240,360,480,600,720,Infinity]
   bins = [0,240,480,720,Infinity],
-  width = 420,
+  width = 420,            // 측정 실패 시 fallback
   height = 300,
 }) {
-  const margin = { top: 12, right: 16, bottom: 36, left: 40 };
-  const W = Math.max(360, width) - margin.left - margin.right;
-  const H = Math.max(220, height) - margin.top - margin.bottom;
+  const margin = { top: 64, right: 64, bottom: 56, left: 72 }; // 범례 자리 확보
+
+  const containerRef = useRef(null);
+  const [cw, setCw] = useState(0);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    let raf = 0;
+    const ro = new ResizeObserver(([entry]) => {
+      const next = Math.round(entry.contentRect.width);
+      // 폭 변화가 1px 이하이면 무시(피드백 루프 방지)
+      setCw(prev => {
+        if (!next || Math.abs(next - prev) <= 1) return prev;
+        cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(() => {});
+        return next;
+      });
+    });
+    ro.observe(el);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, []);
+  const innerW = Math.max(560, cw || width);
+  const W = innerW - margin.left - margin.right;
+  const H = Math.max(260, height) - margin.top - margin.bottom;
 
   // 툴팁 상태
   const [tip, setTip] = useState({ show: false, x: 0, y: 0, type: "", count: 0 });
@@ -112,14 +136,22 @@ export default function SLAStackBar({
   }, [rows, bins]);
 
   const x = (i) => margin.left + (i + 0.5) * (W / stacked.length);
-  const bandW = Math.min(64, W / stacked.length * 0.7);
+  const bandW = Math.min(96, Math.floor((W / stacked.length) * 0.9));
   const y = (p) => margin.top + H - (p / 100) * H;
 
   return (
-    <div style={{
-      background:"#fff", borderRadius:12,
-      boxShadow:"0 2px 8px rgba(0,0,0,0.08)", padding:16
-    }}>
+    <div
+      ref={containerRef}
+      style={{
+        background: "#fff",
+        borderRadius: 12,
+        boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+        padding: 16,
+        width: "100%",            // 부모 너비에 맞춤
+        boxSizing: "border-box",  // 패딩 포함
+        overflowX: "hidden",      // 가로 오버플로우 차단(확대 루프 방지)
+      }}
+    >
       {/* 툴팁 */}
       <div
         style={{
@@ -141,17 +173,24 @@ export default function SLAStackBar({
 
       <h3 style={{margin:"0 0 8px 4px", color:"#333", fontWeight:600}}>SLA 스택(시간 구간별 · 유형 비율)</h3>
 
-      {/* 범례 */}
-      <div style={{display:"flex", flexWrap:"wrap", gap:10, margin:"0 4px 8px"}}>
+      {/* 범례 (우상단, 한 줄 고정) */}
+      <div style={{
+        display: "flex",
+        flexWrap: "nowrap",
+        gap: 12,
+        justifyContent: "flex-end",
+        margin: "4px 4px 8px",
+        overflowX: "auto"
+      }}>
         {ORDER.map(k => (
-          <div key={k} style={{display:"flex", alignItems:"center", gap:6, fontSize:12, color:"#374151"}}>
-            <span style={{width:12, height:12, borderRadius:2, background:COLORS[k]}} />
-            {k}
+          <div key={k} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#374151" }}>
+            <span style={{ width: 18, height: 8, background: COLORS[k], borderRadius: 2 }} />
+            <span>{k}</span>
           </div>
         ))}
       </div>
 
-      <svg width={W + margin.left + margin.right} height={H + margin.top + margin.bottom}>
+      <svg width="100%" height={H + margin.top + margin.bottom}>
         {/* y grid & ticks (0,25,50,75,100%) */}
         {[0,25,50,75,100].map(t => (
           <g key={t}>

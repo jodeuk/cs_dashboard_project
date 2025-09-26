@@ -12,6 +12,7 @@ export default function MultiSelectDropdown({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
+  const userAllRef = useRef(false); // 사용자가 직접 '전체'를 클릭했는지 추적
 
   // ✅ 누적 스냅샷 대신, 그때그때 options ∪ value (중복 제거, 기존 순서 보존)
   const displayOptions = (() => {
@@ -38,10 +39,34 @@ export default function MultiSelectDropdown({
     onChange(Array.from(set));
   };
 
-  const clearAll = () => onChange([]);
+  // ✅ '전체' 토글 계산
+  const allOptions = (options || []).filter(Boolean);
+  const allSelectedLogical =
+    Array.isArray(value) && value.length > 0 && value.length === allOptions.length;
+  
+  // ✅ '전체'는 오직 사용자가 직접 누른 경우에만 체크됨
+  const allSelectedVisual = userAllRef.current;
+  
+  const handleToggleAll = () => {
+    userAllRef.current = !allSelectedLogical; // 사용자가 직접 클릭했음을 표시
+    onChange(allSelectedLogical ? [] : allOptions);
+  };
 
+  const clearAll = () => {
+    userAllRef.current = false; // 전체 해제 시 플래그도 리셋
+    onChange([]);
+  };
+
+  // ✅ 전체 선택이 풀리면 전체 체크 플래그도 해제
+  useEffect(() => {
+    if (!allSelectedLogical) userAllRef.current = false;
+  }, [allSelectedLogical, value]);
+
+  // ✅ 선택 요약: 모두 선택이면 '전체'로 표기
   const label =
-    value && value.length
+    allSelectedLogical
+      ? "전체"
+      : value && value.length
       ? value.length <= maxTagCount
         ? value.join(", ")
         : `${value.slice(0, maxTagCount).join(", ")} 외 ${value.length - maxTagCount}`
@@ -89,6 +114,24 @@ export default function MultiSelectDropdown({
           </div>
 
           <ul style={{ listStyle: "none", margin: 0, padding: 8 }}>
+            {/* ✅ 맨 위에 '전체' 항목 추가 */}
+            <li
+              style={{ 
+                padding: "6px 4px", 
+                display: "flex", 
+                gap: 8, 
+                alignItems: "center", 
+                cursor: "pointer",
+                fontWeight: allSelectedVisual ? 600 : 400,
+                backgroundColor: allSelectedVisual ? "#f0f8ff" : "transparent"
+              }}
+              onClick={handleToggleAll}
+              title="전체 선택/해제"
+            >
+              <input type="checkbox" readOnly checked={allSelectedVisual} />
+              <span style={{ fontSize: 14 }}>전체</span>
+            </li>
+            <li style={{ height: 8, borderBottom: "1px solid #eee", margin: "4px 0" }} />
             {(displayOptions || []).map((opt) => (
               <li
                 key={opt}

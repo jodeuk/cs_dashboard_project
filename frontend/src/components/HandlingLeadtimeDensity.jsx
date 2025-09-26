@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useEffect, useRef, useState } from "react";
 
 /** HH:MM:SS -> 분 */
 const hmsToMinutes = (s) => {
@@ -92,8 +92,21 @@ export default function HandlingLeadtimeDensity({
   bins = 40,          // 히스토그램 bin 개수 (겹침 곡선을 그릴 베이스)
   smoothWindow = 2,   // 스무딩 윈도우
 }) {
-  const margin = { top: 40, right: 64, bottom: 56, left: 72 };
-  const W = Math.max(560, width) - margin.left - margin.right;
+  const margin = { top: 64, right: 64, bottom: 56, left: 72 }; // 범례 자리 확보
+  const containerRef = useRef(null);
+  const [cw, setCw] = useState(0);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      const next = Math.round(entry.contentRect.width);
+      setCw(prev => (Math.abs(next - prev) <= 1 ? prev : next)); // 미세변화 무시
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const innerW = Math.max(560, cw || width);
+  const W = innerW - margin.left - margin.right;
   const H = Math.max(260, height) - margin.top - margin.bottom;
 
   const { series, xMaxP95, yMax } = useMemo(() => {
@@ -243,18 +256,38 @@ export default function HandlingLeadtimeDensity({
 
   return (
     <div
+      ref={containerRef}
       style={{
         backgroundColor: "white",
         borderRadius: 12,
         boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
         padding: 16,
+        width: "100%",
+        boxSizing: "border-box",
+        overflow: "visible",
       }}
     >
       <h3 style={{ margin: "0 0 8px 4px", color: "#333", fontWeight: 600 }}>
         처리시간 분포
       </h3>
 
-      <svg width={W + margin.left + margin.right} height={H + margin.top + margin.bottom}>
+      {/* 범례 (우상단, 줄바꿈 가능) */}
+      <div style={{
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 12,
+        justifyContent: "flex-end",
+        margin: "4px 4px 8px"
+      }}>
+        {series.map((s, i) => (
+          <div key={`lg-${i}`} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#374151" }}>
+            <span style={{ width: 18, height: 8, background: s.color, borderRadius: 2 }} />
+            <span>{s.label} ({s.n})</span>
+          </div>
+        ))}
+      </div>
+
+      <svg width="100%" height={H + margin.top + margin.bottom}>
         {/* y 그리드/축 */}
         <g>
           {yticks.map((t, i) => (
@@ -338,17 +371,6 @@ export default function HandlingLeadtimeDensity({
         })()}
 
 
-        {/* 범례 */}
-        <g transform={`translate(${margin.left}, ${margin.top - 16})`}>
-          {series.map((s, i) => (
-            <g key={`lg-${i}`} transform={`translate(${i * 140}, 0)`}>
-              <rect x="0" y="-8" width="18" height="8" fill={s.color} />
-              <text x="22" y="-2" fontSize="12" fill="#374151">
-                {s.label} ({s.n})
-              </text>
-            </g>
-          ))}
-        </g>
       </svg>
     </div>
   );

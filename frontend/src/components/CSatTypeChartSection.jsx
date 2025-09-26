@@ -43,6 +43,11 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
 
   const chartData = getTypeData();
 
+  // (추가) 데이터 개수에 따라 차트 높이 가변
+  const ROW_HEIGHT = 28;         // 항목 1개당 세로 픽셀
+  const CHART_MIN_H = 220;       // 최소 높이
+  const chartH = Math.max(CHART_MIN_H, chartData.length * ROW_HEIGHT);
+
   return (
     <div style={{ backgroundColor: "white", padding: "20px", borderRadius: "8px", marginBottom: "20px" }}>
       <h3 style={{ marginBottom: "16px", color: "#333" }}>유형별 CSAT 분석</h3>
@@ -103,11 +108,18 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
               {selectedType}별 {selectedCsat}
               {CSAT_QUESTIONS[selectedCsat] ? ` · ${CSAT_QUESTIONS[selectedCsat]}` : ""} 응답자수
             </h4>
-            <ResponsiveContainer width="100%" height={400}>
+            <ResponsiveContainer width="100%" height={chartH}>
               <BarChart data={chartData} layout="vertical" margin={{ top: 10, right: 10, left: 20, bottom: 10 }}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis type="number" />
-                <YAxis type="category" dataKey={selectedType} width={200} />
+                <YAxis
+                  type="category"
+                  dataKey={selectedType}
+                  width={200}
+                  interval={0}       // ✅ 모든 카테고리 라벨 표시
+                  tickMargin={6}
+                  scale="band"
+                />
                 <Tooltip 
                   formatter={(value) => [`${value}명`, '응답자수']}
                   labelFormatter={(label) => `${label} · ${CSAT_QUESTIONS[selectedCsat] || ""}`}
@@ -124,11 +136,18 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
               {selectedType}별 {selectedCsat}
               {CSAT_QUESTIONS[selectedCsat] ? ` · ${CSAT_QUESTIONS[selectedCsat]}` : ""} 평균점수
             </h4>
-            <ResponsiveContainer width="100%" height={400}>
+            <ResponsiveContainer width="100%" height={chartH}>
               <BarChart data={chartData} layout="vertical" margin={{ top: 10, right: 10, left: 20, bottom: 10 }}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis type="number" domain={[0, 5]} />
-                <YAxis type="category" dataKey={selectedType} width={200} />
+                <YAxis
+                  type="category"
+                  dataKey={selectedType}
+                  width={200}
+                  interval={0}       // ✅ 모든 카테고리 라벨 표시
+                  tickMargin={6}
+                  scale="band"
+                />
                 <Tooltip 
                   formatter={(value) => [`${value}점`, '평균점수']}
                   labelFormatter={(label) => `${label} · ${CSAT_QUESTIONS[selectedCsat] || ""}`}
