@@ -279,12 +279,37 @@ export default function HandlingLeadtimeDensity({
         justifyContent: "flex-end",
         margin: "4px 4px 8px"
       }}>
-        {series.map((s, i) => (
-          <div key={`lg-${i}`} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#374151" }}>
-            <span style={{ width: 18, height: 8, background: s.color, borderRadius: 2 }} />
-            <span>{s.label} ({s.n})</span>
-          </div>
-        ))}
+        {series.map((s, i) => {
+          // 이관과 처리불가 레이블을 두 줄로 분리
+          const formatLabel = (label) => {
+            if (label.startsWith("이관/")) {
+              const team = label.split("/")[1];
+              return (
+                <div style={{ lineHeight: 1.2 }}>
+                  <div>이관</div>
+                  <div>({team})</div>
+                </div>
+              );
+            }
+            if (label.startsWith("처리불가/")) {
+              const team = label.split("/")[1];
+              return (
+                <div style={{ lineHeight: 1.2 }}>
+                  <div>처리불가</div>
+                  <div>({team})</div>
+                </div>
+              );
+            }
+            return `${label} (${s.n})`;
+          };
+
+          return (
+            <div key={`lg-${i}`} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#374151" }}>
+              <span style={{ width: 18, height: 8, background: s.color, borderRadius: 2 }} />
+              <span>{formatLabel(s.label)}</span>
+            </div>
+          );
+        })}
       </div>
 
       <svg width="100%" height={H + margin.top + margin.bottom}>

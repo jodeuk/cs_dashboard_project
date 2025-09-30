@@ -78,7 +78,6 @@ app.add_middleware(
 )
 
 # ---- 2. 설정 ----
-FONT_PATH = os.environ.get("FONT_PATH", "/usr/share/fonts/truetype/nanum/NanumGothic.ttf")
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "supersecret")  # 기본값 supersecret
 
 # ---- 2-1. 날짜 제한 함수 ----

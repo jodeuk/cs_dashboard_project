@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 // CSAT 질문 매핑
@@ -11,6 +11,9 @@ const CSAT_QUESTIONS = {
   "A-6": "플랫폼에 대해 개선점이나 건의사항이 있으시면 작성해 주세요."
 };
 
+// 점수 있는 문항만 노출
+const CSAT_SCORE_ITEMS = ["A-1", "A-2", "A-4", "A-5"];
+
 export default function CSatTypeChartSection({ typeScores, typeLabel }) {
   // typeScores에 "처리유형" 키가 있으면 우선 선택, 없으면 전달된 typeLabel, 그것도 없으면 첫 번째 키
   const initialType = useMemo(() => {
@@ -20,7 +23,23 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
     return keys[0] || "문의유형";
   }, [typeScores, typeLabel]);
   const [selectedType, setSelectedType] = useState(initialType);
-  const [selectedCsat, setSelectedCsat] = useState("A-1");
+  
+  // 초기 선택값 보정 (유형에 해당 데이터가 있는 첫 항목)
+  const initialCsat = useMemo(() => {
+    const t = initialType;
+    // 현재 유형에 실제 데이터가 있는 점수 문항만 후보
+    const avail = CSAT_SCORE_ITEMS.filter(k => typeScores?.[t]?.[k]?.length);
+    return avail[0] || "A-1";
+  }, [initialType, typeScores]);
+  const [selectedCsat, setSelectedCsat] = useState(initialCsat);
+
+  // 유형 변경 시, 해당 유형에 데이터가 있는 첫 점수 문항으로 스냅
+  useEffect(() => {
+    const avail = CSAT_SCORE_ITEMS.filter(k => typeScores?.[selectedType]?.[k]?.length);
+    if (!avail.includes(selectedCsat)) {
+      setSelectedCsat(avail[0] || "A-1");
+    }
+  }, [selectedType, selectedCsat, typeScores]);
 
   if (!typeScores || Object.keys(typeScores).length === 0) {
     return <div style={{ padding: "12px", color: "#666" }}>유형별 CSAT 데이터가 없습니다.</div>;
@@ -28,7 +47,6 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
 
   // 사용 가능한 유형들
   const availableTypes = Object.keys(typeScores);
-  const csatOptions = ["A-1", "A-2", "A-3", "A-4", "A-5", "A-6"];
 
   // 선택된 유형의 데이터 가져오기
   const getTypeData = () => {
@@ -89,7 +107,7 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
                 fontSize: "14px"
               }}
             >
-              {csatOptions.map(csat => (
+              {CSAT_SCORE_ITEMS.map(csat => (
                 <option key={csat} value={csat}>
                   {csat} {CSAT_QUESTIONS[csat] ? `· ${CSAT_QUESTIONS[csat]}` : ""}
                 </option>

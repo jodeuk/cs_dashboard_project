@@ -182,12 +182,37 @@ export default function SLAStackBar({
         margin: "4px 4px 8px",
         overflowX: "auto"
       }}>
-        {ORDER.map(k => (
-          <div key={k} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#374151" }}>
-            <span style={{ width: 18, height: 8, background: COLORS[k], borderRadius: 2 }} />
-            <span>{k}</span>
-          </div>
-        ))}
+        {ORDER.map(k => {
+          // 이관과 처리불가 레이블을 두 줄로 분리
+          const formatLabel = (label) => {
+            if (label.startsWith("이관/")) {
+              const team = label.split("/")[1];
+              return (
+                <div style={{ lineHeight: 1.2 }}>
+                  <div>이관</div>
+                  <div>({team})</div>
+                </div>
+              );
+            }
+            if (label.startsWith("처리불가/")) {
+              const team = label.split("/")[1];
+              return (
+                <div style={{ lineHeight: 1.2 }}>
+                  <div>처리불가</div>
+                  <div>({team})</div>
+                </div>
+              );
+            }
+            return label;
+          };
+
+          return (
+            <div key={k} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#374151" }}>
+              <span style={{ width: 18, height: 8, background: COLORS[k], borderRadius: 2 }} />
+              <span>{formatLabel(k)}</span>
+            </div>
+          );
+        })}
       </div>
 
       <svg width="100%" height={H + margin.top + margin.bottom}>
