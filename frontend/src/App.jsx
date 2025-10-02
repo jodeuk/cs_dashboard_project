@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { fetchUserchats, checkApiHealth } from "./api";
+import { fetchUserchats, checkApiHealth, refreshCache } from "./api";
 import FilterPanel from "./components/FilterPanel";
 import ChartSection from "./components/ChartSection";
 import MultiLineChartSection from "./components/MultiLineChartSection";
@@ -8,13 +8,13 @@ import SLAStackBar from "./components/SLAStackBar";
 // 박스플롯/비즈웜 대신 분포 커브 차트
 import HandlingLeadtimeDensity from "./components/HandlingLeadtimeDensity";
 
-const CacheStatusSection = lazy(() => import("./components/CacheStatusSection"));
 const CSatChartSection = lazy(() => import("./components/CSatChartSection"));
 const CSatTypeChartSection = lazy(() => import("./components/CSatTypeChartSection"));
 const CSatCommentsSection = lazy(() => import("./components/CSatCommentsSection"));
 
 // ===== App.jsx 파일 최상단(컴포넌트 밖) =====
-const normArr = (v) => Array.isArray(v) ? v.filter(Boolean) : (v && v !== "전체" ? [v] : []);
+const normArr = (v) =>
+  Array.isArray(v) ? v.filter((x) => x && x !== "전체") : (v && v !== "전체" ? [v] : []);
 const joinOrAll = (vals) => (Array.isArray(vals) && vals.length > 0) ? vals.join(",") : "전체";
 const primaryOf = (s) => (typeof s === "string" && s.includes("/")) ? s.split("/")[0].trim() : (s || "");
 
@@ -437,6 +437,8 @@ function App() {
       return data;
     } else {
       const map = {};
+      const filterStartDate = new Date(start); // 사용자가 선택한 시작 날짜
+      
       filteredRows.forEach((item) => {
         const d = parseTsKST(item.firstAskedAt);
         if (!d) return;
@@ -452,21 +454,26 @@ function App() {
             문의량: 0,
             월레이블: isFirstWeekOfMonth ? `${weekStart.getMonth() + 1}월` : null,
             month: weekStart.getMonth() + 1,
+            weekStartDate: weekStart, // 필터링용
           };
         }
         map[weekKey].문의량 += 1;
       });
-      const weeklyRaw = Object.values(map).sort((a, b) => {
-        const [monthA, dayA] = a.x축.split("/").map(Number);
-        const [monthB, dayB] = b.x축.split("/").map(Number);
-        if (monthA !== monthB) return monthA - monthB;
-        return dayA - dayB;
-      });
+      
+      // 사용자가 선택한 시작 날짜 이전의 주는 제외
+      const filteredWeeklyRaw = Object.values(map)
+        .filter(item => item.weekStartDate >= filterStartDate)
+        .sort((a, b) => {
+          const [monthA, dayA] = a.x축.split("/").map(Number);
+          const [monthB, dayB] = b.x축.split("/").map(Number);
+          if (monthA !== monthB) return monthA - monthB;
+          return dayA - dayB;
+        });
 
-      const data = weeklyRaw.map((item, index) => {
+      const data = filteredWeeklyRaw.map((item, index) => {
         let 월레이블 = item.월레이블;
         if (!월레이블 && index > 0) {
-          const prevItem = weeklyRaw[index - 1];
+          const prevItem = filteredWeeklyRaw[index - 1];
           if (prevItem && prevItem.month !== item.month) {
             월레이블 = `${item.month}월`;
           }
@@ -476,7 +483,7 @@ function App() {
       });
       return data;
     }
-  }, [filteredRows, csDateGroup]);
+  }, [filteredRows, csDateGroup, start]);
 
   // ✅ 평균 응답/해결 시간 차트: 주간/월간 각각 집계
   const avgTimeMonthly = useMemo(() => {
@@ -540,20 +547,25 @@ function App() {
       pushIf(b.operationResolutionTime, item.operationResolutionTime);
     }
     const mmdd = (d) => `${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}`;
-    const rows = Array.from(map.values()).sort((a,b) => a.__wStart - b.__wStart).map(b => {
-      const wEnd = new Date(b.__wStart); wEnd.setDate(wEnd.getDate()+6);
-      return {
-        x축: `${mmdd(b.__wStart)}~${mmdd(wEnd)}`,
-        주레이블: `${mmdd(b.__wStart)}~${mmdd(wEnd)}`,
-        주보조레이블: "",  // 월 경계 표시용
-        월레이블: `${b.__wStart.getMonth() + 1}월`, // 월 레이블 추가
-        operationWaitingTime: (avg(b.operationWaitingTime) || null),
-        operationAvgReplyTime: (avg(b.operationAvgReplyTime) || null),
-        operationTotalReplyTime: (avg(b.operationTotalReplyTime) || null),
-        operationResolutionTime: (avg(b.operationResolutionTime) || null),
-        __wStart: b.__wStart
-      };
-    });
+    const filterStartDate = new Date(start); // 사용자가 선택한 시작 날짜
+    
+    const rows = Array.from(map.values())
+      .filter(b => b.__wStart >= filterStartDate) // 시작 날짜 이전의 주 제외
+      .sort((a,b) => a.__wStart - b.__wStart)
+      .map(b => {
+        const wEnd = new Date(b.__wStart); wEnd.setDate(wEnd.getDate()+6);
+        return {
+          x축: `${mmdd(b.__wStart)}~${mmdd(wEnd)}`,
+          주레이블: `${mmdd(b.__wStart)}~${mmdd(wEnd)}`,
+          주보조레이블: "",  // 월 경계 표시용
+          월레이블: `${b.__wStart.getMonth() + 1}월`, // 월 레이블 추가
+          operationWaitingTime: (avg(b.operationWaitingTime) || null),
+          operationAvgReplyTime: (avg(b.operationAvgReplyTime) || null),
+          operationTotalReplyTime: (avg(b.operationTotalReplyTime) || null),
+          operationResolutionTime: (avg(b.operationResolutionTime) || null),
+          __wStart: b.__wStart
+        };
+      });
     // 월 경계 라벨
     let prev = "";
     rows.forEach(r => {
@@ -563,7 +575,7 @@ function App() {
       delete r.__wStart;
     });
     return rows;
-  }, [filteredRows]);
+  }, [filteredRows, start]);
 
   // ✅ 통계: filteredRows 직접 사용
   const statistics = useMemo(() => {
@@ -575,23 +587,46 @@ function App() {
         ? Math.round((firstResponseTimes.reduce((s, t) => s + t, 0) / firstResponseTimes.length) * 100) / 100
         : 0;
 
-    const responseTimes = filteredRows.map((i) => timeToSec(i.operationAvgReplyTime)).filter((t) => t > 0);
-    const avgResponseTime =
-      responseTimes.length > 0
-        ? Math.round((responseTimes.reduce((s, t) => s + t, 0) / responseTimes.length) * 100) / 100
-        : 0;
-
     const resolutionTimes = filteredRows.map((i) => timeToSec(i.operationResolutionTime)).filter((t) => t > 0);
     const avgResolutionTime =
       resolutionTimes.length > 0
         ? Math.round((resolutionTimes.reduce((s, t) => s + t, 0) / resolutionTimes.length) * 100) / 100
         : 0;
 
+    // 자체해결 비율 계산 (처리유형 비율 차트와 동일 로직)
+    const pickHandlingTag = (row) => {
+      const tags = row?.tags || [];
+      for (const t of tags) {
+        if (typeof t !== "string") continue;
+        const norm = t.replace(/\s+/g, "");
+        if (norm.startsWith("처리유형/")) return t;
+      }
+      return null;
+    };
+    const parseType = (tag) => {
+      if (!tag) return null;
+      const parts = tag.split("/").map(s => s.trim());
+      if (parts.length < 2) return null;
+      return parts[1]; // top 레벨만 반환
+    };
+    
+    const handlingTypeCounts = new Map();
+    filteredRows.forEach(r => {
+      const tag = pickHandlingTag(r);
+      const type = parseType(tag);
+      if (!type || type === "기타") return; // 태그 없거나 기타 제외
+      handlingTypeCounts.set(type, (handlingTypeCounts.get(type) || 0) + 1);
+    });
+    
+    const totalWithHandlingType = Array.from(handlingTypeCounts.values()).reduce((sum, v) => sum + v, 0);
+    const selfResolvedCount = handlingTypeCounts.get("자체해결") || 0;
+    const selfResolvedRate = totalWithHandlingType > 0 ? (selfResolvedCount / totalWithHandlingType) * 100 : 0;
+
     return {
       총문의수: totalInquiries,
       평균첫응답시간: avgFirstResponseTime,
-      평균응답시간: avgResponseTime,
       평균해결시간: avgResolutionTime,
+      자체해결비율: selfResolvedRate,
     };
   }, [filteredRows]);
 
@@ -809,7 +844,20 @@ function App() {
           <h1 style={{ textAlign: "center", color: "#333", margin: 0 }}>📊 CS 대시보드</h1>
           <div style={{ display: "flex", gap: "12px" }}>
             <button
-              onClick={() => fetchRowsWithParams("update")}
+              onClick={async () => {
+                setLoading(true);
+                try {
+                  const res = await refreshCache(start, end, true); // force=true
+                  console.log("✅ 최신화 결과:", res);
+                  await fetchRowsWithParams("cache"); // 최신화 후 캐시 데이터 다시 로드
+                  setSuccess("✅ 캐시 최신화 완료");
+                  setTimeout(() => setSuccess(null), 2000);
+                } catch (err) {
+                  setError("❌ 캐시 최신화 실패: " + (err?.message || err));
+                } finally {
+                  setLoading(false);
+                }
+              }}
               disabled={loading}
               style={{
                 padding: "10px 20px",
@@ -838,7 +886,7 @@ function App() {
             borderRadius: "8px 8px 0 0",
           }}
         >
-          {["CS", "CSAT", ...(isAdmin ? ["Cache"] : [])].map((t) => (
+          {["CS", "CSAT"].map((t) => (
             <button
               key={t}
               onClick={() => setActiveTab(t)}
@@ -945,8 +993,8 @@ function App() {
               {[
                 { label: "총 문의수", value: statistics.총문의수?.toLocaleString() || 0, color: "#007bff" },
                 { label: "평균 첫 응답시간", value: `${statistics.평균첫응답시간?.toFixed(1) || 0}분`, color: "#17a2b8" },
-                { label: "평균 응답시간", value: `${statistics.평균응답시간?.toFixed(1) || 0}분`, color: "#28a745" },
-                { label: "평균 해결시간", value: `${statistics.평균해결시간?.toFixed(1) || 0}분`, color: "#dc3545" },
+                { label: "평균 해결시간", value: `${statistics.평균해결시간?.toFixed(1) || 0}분`, color: "#28a745" },
+                { label: "자체해결 비율", value: `${statistics.자체해결비율?.toFixed(1) || 0}%`, color: "#6f42c1" },
               ].map((kpi, idx) => (
                 <div
                   key={idx}
@@ -1340,54 +1388,6 @@ function App() {
                 {csatData ? "CSAT 데이터 로드 중..." : "CSAT 데이터를 불러오는 중입니다..."}
               </div>
             )}
-          </Suspense>
-        )}
-
-        {/* Cache 탭 */}
-        {activeTab === "Cache" && (
-          <Suspense fallback={<div style={{padding:20}}>로딩 중...</div>}>
-            <CacheStatusSection start={start} end={end} />
-            <div
-              style={{
-                backgroundColor: "white",
-                padding: "20px",
-                borderRadius: "8px",
-                marginTop: "20px",
-                textAlign: "center",
-              }}
-            >
-              <h3 style={{ margin: "0 0 20px 0", color: "#333" }}>캐시 관리</h3>
-              {isAdmin && (
-                <button
-                  onClick={() => {/* 더 이상 프론트에서 호출하지 않음 (관리자만 서버에서) */}}
-                  disabled
-                  style={{
-                    padding: "12px 24px",
-                    backgroundColor: "#dc3545",
-                    color: "white",
-                    border: "none",
-                    borderRadius: "6px",
-                    cursor: "not-allowed",
-                    fontSize: "16px",
-                    fontWeight: "bold",
-                    boxShadow: "0 2px 4px rgba(0,0,0,0.1)",
-                    opacity: 0.5,
-                  }}
-                >
-                  관리자 전용 (서버에서 실행)
-                </button>
-              )}
-              <p
-                style={{
-                  margin: "15px 0 0 0",
-                  fontSize: "14px",
-                  color: "#666",
-                  fontStyle: "italic",
-                }}
-              >
-                ⚠️ 주의: 기존 캐시를 완전히 삭제하고 전체 데이터를 새로 수집합니다
-              </p>
-            </div>
           </Suspense>
         )}
       </div>

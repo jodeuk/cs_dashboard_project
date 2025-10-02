@@ -127,16 +127,15 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
               {CSAT_QUESTIONS[selectedCsat] ? ` · ${CSAT_QUESTIONS[selectedCsat]}` : ""} 응답자수
             </h4>
             <ResponsiveContainer width="100%" height={chartH}>
-              <BarChart data={chartData} layout="vertical" margin={{ top: 10, right: 10, left: 20, bottom: 10 }}>
+              <BarChart data={chartData} layout="vertical" margin={{ top: 10, right: 30, left: 150, bottom: 10 }}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis type="number" />
                 <YAxis
                   type="category"
                   dataKey={selectedType}
-                  width={200}
-                  interval={0}       // ✅ 모든 카테고리 라벨 표시
-                  tickMargin={6}
-                  scale="band"
+                  width={140}
+                  interval={0}
+                  tick={{ fontSize: 12 }}
                 />
                 <Tooltip 
                   formatter={(value) => [`${value}명`, '응답자수']}
@@ -155,16 +154,15 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
               {CSAT_QUESTIONS[selectedCsat] ? ` · ${CSAT_QUESTIONS[selectedCsat]}` : ""} 평균점수
             </h4>
             <ResponsiveContainer width="100%" height={chartH}>
-              <BarChart data={chartData} layout="vertical" margin={{ top: 10, right: 10, left: 20, bottom: 10 }}>
+              <BarChart data={chartData} layout="vertical" margin={{ top: 10, right: 30, left: 150, bottom: 10 }}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis type="number" domain={[0, 5]} />
                 <YAxis
                   type="category"
                   dataKey={selectedType}
-                  width={200}
-                  interval={0}       // ✅ 모든 카테고리 라벨 표시
-                  tickMargin={6}
-                  scale="band"
+                  width={140}
+                  interval={0}
+                  tick={{ fontSize: 12 }}
                 />
                 <Tooltip 
                   formatter={(value) => [`${value}점`, '평균점수']}

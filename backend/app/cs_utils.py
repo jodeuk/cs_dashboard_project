@@ -481,6 +481,15 @@ class ChannelTalkAPI:
         processed_data = []
         for item in data:
             first_asked_at = item.get("firstAskedAt")
+            is_outbound = False
+            
+            # firstAskedAt이 None이면 createdAt으로 대체하고 OB 태그 추가
+            if first_asked_at is None:
+                first_asked_at = item.get("createdAt")
+                is_outbound = True
+                item["firstAskedAt"] = first_asked_at
+            
+            # createdAt도 없으면 건너뛰기
             if first_asked_at is None:
                 continue
             
@@ -530,7 +539,9 @@ class ChannelTalkAPI:
                 "서비스유형_2차": 서비스유형_2차,
                 "처리유형_2차": 처리유형_2차,
                 # userChat id
-                "userChatId": item.get("id") or item.get("chatId") or item.get("mainKey", "").replace("userChat-", "")
+                "userChatId": item.get("id") or item.get("chatId") or item.get("mainKey", "").replace("userChat-", ""),
+                # direction: OB (Outbound) if firstAskedAt was None, IB (Inbound) otherwise
+                "direction": "OB" if is_outbound else "IB"
             }
             processed_data.append(processed_item)
 
@@ -551,7 +562,7 @@ class ChannelTalkAPI:
             "firstAskedAt","createdAt","openedAt","closedAt",
             "operationWaitingTime","operationAvgReplyTime",
             "operationTotalReplyTime","operationResolutionTime",
-            "userChatId","userId","personId"
+            "userChatId","userId","personId","direction"
         ]
         for col in required_columns:
             if col not in df.columns:
@@ -1402,6 +1413,9 @@ def build_csat_type_scores(enriched_df: pd.DataFrame):
         records = []
         # dropna=False 로 그룹핑해야 NaN 라벨(빈 값)도 따로 집계 가능
         for label_val, sub in df.groupby(label_col, dropna=False):
+            # 빈 값이나 NaN은 "미분류"로 표시
+            if pd.isna(label_val) or str(label_val).strip() == "":
+                label_val = "미분류"
             sub_idx = sub.index
 
             # --- 2) 공통 분모: 설문 시작자 수 (해당 그룹 범위로 인덱스 맞춰 합산) ---

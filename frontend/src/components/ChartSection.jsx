@@ -266,10 +266,19 @@ const ChartSection = ({
         {/* X축 라벨 */}
         {(() => {
           const rows = safeData;
+          // 시작 날짜 계산 (데이터의 첫 번째 항목 날짜)
+          const startDate = rows.length > 0 && rows[0].label ? new Date(rows[0].label) : null;
+          
           return rows.map((item, idx) => {
             const x = rows.length === 1
               ? chartWidth / 2
               : (idx / (rows.length - 1)) * (chartWidth - 60) + 30;
+
+            // 현재 아이템의 날짜
+            const itemDate = item.label ? new Date(item.label) : null;
+            
+            // 시작 날짜 이상인지 확인
+            const isValidDate = !startDate || !itemDate || itemDate >= startDate;
 
             return (
               <g key={idx}>
@@ -295,8 +304,8 @@ const ChartSection = ({
                   </text>
                 )}
 
-                {/* 주간: 그 달의 첫 주만 월 레이블 */}
-                {dateGroup === "주간" && item.월레이블 && isFirstWeekOfMonth(rows, idx) && (
+                {/* 주간: 그 달의 첫 주만 월 레이블 (시작 날짜 이상만 표시) */}
+                {dateGroup === "주간" && item.월레이블 && isFirstWeekOfMonth(rows, idx) && isValidDate && (
                   <text
                     x={x}
                     y={chartHeight - 40}

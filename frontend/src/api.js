@@ -196,8 +196,8 @@ export function checkCacheForPeriod(start, end) {
 export function clearCache() {
   return apiCall("delete", "/cache/clear");
 }
-export function refreshCache(start, end) {
-  return apiCall("get", "/cache/refresh", { start, end });
+export function refreshCache(start, end, force = true, include_csat = false) {
+  return apiCall("get", "/cache/refresh", { start, end, force, include_csat });
 }
 
 // API 상태 확인 (health)

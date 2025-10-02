@@ -40,7 +40,7 @@ export default function HandlingTypeDonut({ rows = [], width = 380, height = 300
       if (top === "기타") return;            // 명시 '기타' 제외
       // detail 토글: 자체해결은 그대로, 이관/처리불가는 세부만 카운트
       const key = detail
-        ? (top === "자체해결" ? "자체해결" : (d ? `${top}/${d}` : null))
+        ? (top === "자체해결" ? "자체해결" : (d ? `${top}/${d}` : top))  // 세부 정보 없으면 top 레벨 유지
         : top;
       if (!key) return;
       map.set(key, (map.get(key) || 0) + 1);

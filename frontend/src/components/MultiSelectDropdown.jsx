@@ -12,16 +12,17 @@ export default function MultiSelectDropdown({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
-  const userAllRef = useRef(false); // 사용자가 직접 '전체'를 클릭했는지 추적
 
   // ✅ 누적 스냅샷 대신, 그때그때 options ∪ value (중복 제거, 기존 순서 보존)
   const displayOptions = (() => {
     const base = Array.isArray(options) ? options : [];
     if (!stickyOptions) return base;
     const set = new Set(base);
-    (Array.isArray(value) ? value : []).forEach(v => { if (!set.has(v)) set.add(v); });
+    (Array.isArray(value) ? value : []).forEach(v => {
+      if (v !== "전체" && !set.has(v)) set.add(v);
+    });
     // 원래 options 순서를 먼저, 선택값 중 options에 없던 것만 뒤에
-    const extras = (Array.isArray(value) ? value : []).filter(v => !base.includes(v));
+    const extras = (Array.isArray(value) ? value : []).filter(v => v !== "전체" && !base.includes(v));
     return [...base, ...extras];
   })();
 
@@ -35,6 +36,8 @@ export default function MultiSelectDropdown({
 
   const toggleItem = (opt) => {
     const set = new Set(value || []);
+    // 개별 옵션을 건드리면 "전체" 태그는 제거
+    set.delete("전체");
     set.has(opt) ? set.delete(opt) : set.add(opt);
     onChange(Array.from(set));
   };
@@ -42,25 +45,21 @@ export default function MultiSelectDropdown({
   // ✅ '전체' 토글 계산
   const allOptions = (options || []).filter(Boolean);
   const allSelectedLogical =
-    Array.isArray(value) && value.length > 0 && value.length === allOptions.length;
+    Array.isArray(value) &&
+    (value.includes("전체") || (value.length > 0 && value.length === allOptions.length));
   
-  // ✅ '전체'는 오직 사용자가 직접 누른 경우에만 체크됨
-  const allSelectedVisual = userAllRef.current;
+  const allSelectedVisual = allSelectedLogical;
   
   const handleToggleAll = () => {
-    userAllRef.current = !allSelectedLogical; // 사용자가 직접 클릭했음을 표시
-    onChange(allSelectedLogical ? [] : allOptions);
+    // "전체" ON → ["전체"]만 전달, OFF → []
+    onChange(allSelectedLogical ? [] : ["전체"]);
   };
 
   const clearAll = () => {
-    userAllRef.current = false; // 전체 해제 시 플래그도 리셋
     onChange([]);
   };
 
-  // ✅ 전체 선택이 풀리면 전체 체크 플래그도 해제
-  useEffect(() => {
-    if (!allSelectedLogical) userAllRef.current = false;
-  }, [allSelectedLogical, value]);
+  // 별도 플래그 불필요 (allSelectedLogical로 충분)
 
   // ✅ 선택 요약: 모두 선택이면 '전체'로 표기
   const label =
