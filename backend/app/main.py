@@ -22,8 +22,32 @@ from app.cs_utils import (
     build_csat_type_scores,
     get_filtered_df
 )
+import json
 
 # ---- 유틸 함수 ----
+# 문의 데이터 AIDT/이메일 저장용 JSON 파일 경로
+INQUIRY_METADATA_FILE = os.environ.get("INQUIRY_METADATA_FILE", "/tmp/inquiry_metadata.json")
+
+def load_inquiry_metadata():
+    """문의 메타데이터(AIDT, 이메일) 로드"""
+    if not os.path.exists(INQUIRY_METADATA_FILE):
+        return {}
+    try:
+        with open(INQUIRY_METADATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[INQUIRY_METADATA] 로드 실패: {e}")
+        return {}
+
+def save_inquiry_metadata(data):
+    """문의 메타데이터(AIDT, 이메일) 저장"""
+    try:
+        os.makedirs(os.path.dirname(INQUIRY_METADATA_FILE), exist_ok=True)
+        with open(INQUIRY_METADATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[INQUIRY_METADATA] 저장 실패: {e}")
+        raise
 def _iso_millis(series):
     s = pd.to_datetime(series, errors="coerce")
     return s.dt.strftime("%Y-%m-%dT%H:%M:%S.%f").str.slice(0, 23)
@@ -387,6 +411,16 @@ async def userchats(start: str = Query(...), end: str = Query(...), force_refres
         # NaN/Inf 값 제거
         filtered = filtered.replace([np.inf, -np.inf], np.nan)
         data_dict = filtered.to_dict(orient="records")
+        
+        # 문의 메타데이터(AIDT, 이메일) 병합
+        metadata = load_inquiry_metadata()
+        for record in data_dict:
+            user_chat_id = str(record.get("userChatId", ""))
+            if user_chat_id and user_chat_id in metadata:
+                record["aidt"] = metadata[user_chat_id].get("aidt", "")
+                record["이메일"] = metadata[user_chat_id].get("이메일", metadata[user_chat_id].get("email", ""))
+                record["email"] = metadata[user_chat_id].get("email", metadata[user_chat_id].get("이메일", ""))
+        
         return _sanitize_json(data_dict)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"캐시 데이터 조회 실패: {str(e)}")
@@ -829,3 +863,29 @@ async def admin_full_refresh(
         "csat_rows_saved": int(csat_rows),
         "range": [start, end]
     }
+
+# ---- 9. 문의 메타데이터(AIDT/이메일) 관리 API ----
+@app.put("/api/inquiry-metadata/{user_chat_id}")
+async def update_inquiry_metadata(user_chat_id: str, metadata: dict):
+    """문의 메타데이터(AIDT, 이메일) 업데이트"""
+    try:
+        data = load_inquiry_metadata()
+        if user_chat_id not in data:
+            data[user_chat_id] = {}
+        data[user_chat_id].update({
+            "aidt": metadata.get("aidt", ""),
+            "이메일": metadata.get("이메일", ""),
+            "email": metadata.get("email", metadata.get("이메일", ""))
+        })
+        save_inquiry_metadata(data)
+        return {"ok": True, "userChatId": user_chat_id, "metadata": data[user_chat_id]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"메타데이터 저장 실패: {str(e)}")
+
+@app.get("/api/inquiry-metadata")
+async def get_inquiry_metadata():
+    """모든 문의 메타데이터 조회"""
+    try:
+        return load_inquiry_metadata()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"메타데이터 조회 실패: {str(e)}")
