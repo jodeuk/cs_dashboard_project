@@ -10,6 +10,7 @@ import HandlingLeadtimeDensity from "./components/HandlingLeadtimeDensity";
 import DayOfWeekTimeDistributionChart from "./components/DayOfWeekTimeDistributionChart";
 import CloudCrmChartsSection from "./components/CloudCrmChartsSection";
 import CloudAmountSummaryCard from "./components/CloudAmountSummaryCard";
+import CloudTimelineChart from "./components/CloudTimelineChart";
 import { PieChart, Pie, Cell, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 const CSatChartSection = lazy(() => import("./components/CSatChartSection"));
@@ -282,6 +283,10 @@ function App() {
   const [tooltip, setTooltip] = useState({ visible: false, x: 0, y: 0, title: "", count: 0, percent: 0 });
   const [, setHoverIndex] = useState(null); // 값은 안 쓰므로 변수 생략
   const [direction, setDirection] = useState(["IB"]); // IB/OB 필터 (기본값: IB만)
+  
+  // 서비스유형/문의유형별 문의량 테이블 정렬 상태
+  const [serviceInquiryTableSortField, setServiceInquiryTableSortField] = useState("문의량");
+  const [serviceInquiryTableSortDirection, setServiceInquiryTableSortDirection] = useState("desc");
 
   // Cloud 고객 데이터 상태
   const [cloudCustomers, setCloudCustomers] = useState([]);
@@ -1970,6 +1975,111 @@ function App() {
     return result;
   }, [filteredRows]);
 
+  // ✅ 서비스유형/문의유형/문의유형(세부) 테이블 데이터 (기간 필터 적용)
+  const serviceInquiryTableData = useMemo(() => {
+    if (filteredRows.length === 0) return [];
+
+    // 서비스유형, 문의유형, 문의유형_2차 조합별 집계
+    const map = new Map(); // key: "서비스유형|문의유형|문의유형_2차"
+    
+    filteredRows.forEach((row) => {
+      const tags = pickTagsFromRow(row);
+      const serviceType = tags.서비스유형 || "미분류";
+      const inquiryType = tags.문의유형 || "미분류";
+      let inquiryType2 = tags.문의유형_2차 || "";
+      
+      // 문의유형이 "/"로 구분되어 있으면 첫 부분만 사용
+      let inquiryType1 = inquiryType;
+      if (inquiryType.includes("/")) {
+        inquiryType1 = inquiryType.split("/")[0].trim();
+        if (!inquiryType2) {
+          inquiryType2 = inquiryType.split("/").slice(1).join("/").trim();
+        }
+      }
+      
+      const key = `${serviceType}|${inquiryType1}|${inquiryType2 || "미분류"}`;
+      
+      if (!map.has(key)) {
+        map.set(key, {
+          서비스유형: serviceType,
+          문의유형: inquiryType1,
+          문의유형_2차: inquiryType2 || "미분류",
+          문의량: 0,
+          총응답시간: [],
+          평균응답시간: [],
+        });
+      }
+      
+      const item = map.get(key);
+      item.문의량 += 1;
+      
+      // 응답시간 계산
+      const avgReplyTime = timeToSec(row.operationAvgReplyTime);
+      const totalReplyTime = timeToSec(row.operationTotalReplyTime);
+      
+      if (avgReplyTime > 0) item.평균응답시간.push(avgReplyTime);
+      if (totalReplyTime > 0) item.총응답시간.push(totalReplyTime);
+    });
+    
+    const total = filteredRows.length;
+    
+    // 배열을 평균값으로 변환하고 전체 테이블 데이터 생성
+    const result = Array.from(map.values()).map((item) => {
+      const avgAvgReplyTime = item.평균응답시간.length > 0
+        ? item.평균응답시간.reduce((sum, t) => sum + t, 0) / item.평균응답시간.length
+        : null;
+      const avgTotalReplyTime = item.총응답시간.length > 0
+        ? item.총응답시간.reduce((sum, t) => sum + t, 0) / item.총응답시간.length
+        : null;
+      
+      return {
+        서비스유형: item.서비스유형,
+        문의유형: item.문의유형,
+        문의유형_2차: item.문의유형_2차,
+        문의량: item.문의량,
+        비율: total > 0 ? ((item.문의량 / total) * 100).toFixed(2) : "0.00",
+        평균응답시간: avgAvgReplyTime !== null ? parseFloat((avgAvgReplyTime / 60).toFixed(1)) : null, // 분 단위 (숫자로 변환)
+        총응답시간: avgTotalReplyTime !== null ? parseFloat((avgTotalReplyTime / 60).toFixed(1)) : null, // 분 단위 (숫자로 변환)
+      };
+    }); // 정렬은 별도 useMemo에서 처리
+    
+    return result;
+  }, [filteredRows]);
+
+  // ✅ 서비스유형/문의유형별 문의량 테이블 정렬된 데이터
+  const sortedServiceInquiryTableData = useMemo(() => {
+    if (serviceInquiryTableData.length === 0) return [];
+
+    const sorted = [...serviceInquiryTableData];
+
+    sorted.sort((a, b) => {
+      let aVal, bVal;
+
+      switch (serviceInquiryTableSortField) {
+        case "문의량":
+          aVal = a.문의량;
+          bVal = b.문의량;
+          break;
+        case "평균응답시간":
+          aVal = a.평균응답시간 !== null ? a.평균응답시간 : -Infinity;
+          bVal = b.평균응답시간 !== null ? b.평균응답시간 : -Infinity;
+          break;
+        case "총응답시간":
+          aVal = a.총응답시간 !== null ? a.총응답시간 : -Infinity;
+          bVal = b.총응답시간 !== null ? b.총응답시간 : -Infinity;
+          break;
+        default:
+          return 0;
+      }
+
+      if (aVal < bVal) return serviceInquiryTableSortDirection === "asc" ? -1 : 1;
+      if (aVal > bVal) return serviceInquiryTableSortDirection === "asc" ? 1 : -1;
+      return 0;
+    });
+
+    return sorted;
+  }, [serviceInquiryTableData, serviceInquiryTableSortField, serviceInquiryTableSortDirection]);
+
   // 유틸
   function timeToSec(t) {
     if (!t || t === "" || t === " " || t === "null" || t === "undefined") return 0;
@@ -2582,6 +2692,199 @@ function App() {
                 <DayOfWeekTimeDistributionChart rows={filteredRows} />
               </div>
             </div>
+
+            {/* 서비스유형/문의유형별 문의량 테이블 */}
+            {serviceInquiryTableData.length > 0 && (
+              <div style={{ marginBottom: "24px" }}>
+                <div
+                  style={{
+                    backgroundColor: "white",
+                    padding: "20px",
+                    borderRadius: "12px",
+                    boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+                  }}
+                >
+                  <h3 style={{ marginBottom: "16px", color: "#333", fontWeight: "600" }}>
+                    서비스유형/문의유형별 문의량 ({filteredRows.length}건)
+                  </h3>
+                  <div style={{ overflowX: "auto" }}>
+                    <table
+                      style={{
+                        width: "100%",
+                        borderCollapse: "collapse",
+                        fontSize: "13px",
+                      }}
+                    >
+                      <thead>
+                        <tr style={{ backgroundColor: "#f8f9fa" }}>
+                          <th
+                            style={{
+                              padding: "12px",
+                              textAlign: "left",
+                              borderBottom: "2px solid #dee2e6",
+                              fontWeight: "600",
+                              color: "#495057",
+                            }}
+                          >
+                            서비스유형
+                          </th>
+                          <th
+                            style={{
+                              padding: "12px",
+                              textAlign: "left",
+                              borderBottom: "2px solid #dee2e6",
+                              fontWeight: "600",
+                              color: "#495057",
+                            }}
+                          >
+                            문의유형
+                          </th>
+                          <th
+                            style={{
+                              padding: "12px",
+                              textAlign: "left",
+                              borderBottom: "2px solid #dee2e6",
+                              fontWeight: "600",
+                              color: "#495057",
+                            }}
+                          >
+                            문의유형(세부)
+                          </th>
+                          <th
+                            onClick={() => {
+                              if (serviceInquiryTableSortField === "평균응답시간") {
+                                setServiceInquiryTableSortDirection(
+                                  serviceInquiryTableSortDirection === "asc" ? "desc" : "asc"
+                                );
+                              } else {
+                                setServiceInquiryTableSortField("평균응답시간");
+                                setServiceInquiryTableSortDirection("desc");
+                              }
+                            }}
+                            style={{
+                              padding: "12px",
+                              textAlign: "right",
+                              borderBottom: "2px solid #dee2e6",
+                              fontWeight: "600",
+                              color: "#495057",
+                              cursor: "pointer",
+                              userSelect: "none",
+                            }}
+                          >
+                            평균응답시간{" "}
+                            {serviceInquiryTableSortField === "평균응답시간"
+                              ? serviceInquiryTableSortDirection === "asc"
+                                ? "↑"
+                                : "↓"
+                              : "↕"}
+                          </th>
+                          <th
+                            onClick={() => {
+                              if (serviceInquiryTableSortField === "총응답시간") {
+                                setServiceInquiryTableSortDirection(
+                                  serviceInquiryTableSortDirection === "asc" ? "desc" : "asc"
+                                );
+                              } else {
+                                setServiceInquiryTableSortField("총응답시간");
+                                setServiceInquiryTableSortDirection("desc");
+                              }
+                            }}
+                            style={{
+                              padding: "12px",
+                              textAlign: "right",
+                              borderBottom: "2px solid #dee2e6",
+                              fontWeight: "600",
+                              color: "#495057",
+                              cursor: "pointer",
+                              userSelect: "none",
+                            }}
+                          >
+                            총응답시간{" "}
+                            {serviceInquiryTableSortField === "총응답시간"
+                              ? serviceInquiryTableSortDirection === "asc"
+                                ? "↑"
+                                : "↓"
+                              : "↕"}
+                          </th>
+                          <th
+                            onClick={() => {
+                              if (serviceInquiryTableSortField === "문의량") {
+                                setServiceInquiryTableSortDirection(
+                                  serviceInquiryTableSortDirection === "asc" ? "desc" : "asc"
+                                );
+                              } else {
+                                setServiceInquiryTableSortField("문의량");
+                                setServiceInquiryTableSortDirection("desc");
+                              }
+                            }}
+                            style={{
+                              padding: "12px",
+                              textAlign: "right",
+                              borderBottom: "2px solid #dee2e6",
+                              fontWeight: "600",
+                              color: "#495057",
+                              cursor: "pointer",
+                              userSelect: "none",
+                            }}
+                          >
+                            문의량{" "}
+                            {serviceInquiryTableSortField === "문의량"
+                              ? serviceInquiryTableSortDirection === "asc"
+                                ? "↑"
+                                : "↓"
+                              : "↕"}
+                          </th>
+                          <th
+                            style={{
+                              padding: "12px",
+                              textAlign: "right",
+                              borderBottom: "2px solid #dee2e6",
+                              fontWeight: "600",
+                              color: "#495057",
+                            }}
+                          >
+                            비율
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sortedServiceInquiryTableData.map((row, idx) => (
+                          <tr
+                            key={idx}
+                            style={{
+                              borderBottom: "1px solid #e9ecef",
+                              backgroundColor: idx % 2 === 0 ? "#ffffff" : "#f8f9fa",
+                            }}
+                          >
+                            <td style={{ padding: "12px", color: "#495057" }}>
+                              {row.서비스유형}
+                            </td>
+                            <td style={{ padding: "12px", color: "#495057" }}>
+                              {row.문의유형}
+                            </td>
+                            <td style={{ padding: "12px", color: "#495057" }}>
+                              {row.문의유형_2차}
+                            </td>
+                            <td style={{ padding: "12px", textAlign: "right", color: "#495057" }}>
+                              {row.평균응답시간 !== null ? `${row.평균응답시간}분` : "-"}
+                            </td>
+                            <td style={{ padding: "12px", textAlign: "right", color: "#495057" }}>
+                              {row.총응답시간 !== null ? `${row.총응답시간}분` : "-"}
+                            </td>
+                            <td style={{ padding: "12px", textAlign: "right", color: "#495057", fontWeight: "600" }}>
+                              {row.문의량}
+                            </td>
+                            <td style={{ padding: "12px", textAlign: "right", color: "#495057" }}>
+                              {row.비율}%
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* 담당자별 통계 섹션 */}
             <div style={{ marginTop: "24px" }}>
@@ -3602,6 +3905,9 @@ function App() {
                   {/* 2. 계약/정산 총금액 카드 (상단으로 이동) */}
                   <CloudAmountSummaryCard cloudCustomers={cloudCustomers} resourceMap={resourceMap} />
 
+                  {/* 2-1. 사용기간 타임라인 */}
+                  <CloudTimelineChart cloudCustomers={cloudCustomers} resourceMap={resourceMap} />
+
                   {/* 3~4. CRM 관련 차트 묶음 */}
                   <CloudCrmChartsSection crmCustomers={crmCustomers} />
 
@@ -4288,8 +4594,7 @@ function App() {
                     문의날짜
                   </label>
                   <input
-                    type="text"
-                    placeholder="YYYY-MM-DD 형식으로 입력"
+                    type="date"
                     value={cloudFormData.문의날짜}
                     onChange={(e) => setCloudFormData({ ...cloudFormData, 문의날짜: e.target.value })}
                     style={{
@@ -4884,6 +5189,11 @@ function App() {
                         />
                       </div>
                     </div>
+            
+            {/* 사용기간 타임라인 */}
+            <div style={{ marginBottom: "32px" }}>
+              <CloudTimelineChart cloudCustomers={cloudCustomers} resourceMap={resourceMap} />
+            </div>
               
                     {filteredCustomers.length === 0 ? (
                 <div style={{
@@ -4896,24 +5206,24 @@ function App() {
                   등록된 고객이 없습니다. 위 폼을 사용하여 고객을 등록해주세요.
                 </div>
               ) : (
-                <div style={{ overflowX: "auto" }}>
+                <div style={{ width: "100%" }}>
                   <table style={{
                     width: "100%",
                     borderCollapse: "collapse",
-                    fontSize: "14px",
+                    fontSize: "11px",
                     backgroundColor: "white"
                   }}>
                     <thead>
                       <tr style={{ backgroundColor: "#f8f9fa" }}>
-                        <th style={{ padding: "12px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "12px" }}>
-                          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "75px" }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
                             <span>사업유형</span>
                             <select 
                               value={tableFilters.사업유형}
                               onChange={(e) => setTableFilters({...tableFilters, 사업유형: e.target.value})}
                               style={{ 
-                                fontSize: "11px", 
-                                padding: "2px 4px", 
+                                fontSize: "9px", 
+                                padding: "1px 2px", 
                                 border: "1px solid #ccc", 
                                 borderRadius: "3px",
                                 backgroundColor: "white"
@@ -4925,19 +5235,24 @@ function App() {
                             </select>
                           </div>
                         </th>
-                        <th style={{ padding: "12px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "12px", whiteSpace: "nowrap" }}>이름</th>
-                        <th style={{ padding: "12px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "12px" }}>소속</th>
-                        <th style={{ padding: "12px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "12px" }}>기관페이지</th>
-                        <th style={{ padding: "12px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "12px" }}>이메일</th>
-                        <th style={{ padding: "12px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "12px" }}>
-                          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", whiteSpace: "nowrap", width: "70px" }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                            <span>담당자</span>
+                          </div>
+                        </th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", whiteSpace: "nowrap", width: "100px" }}>이름</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "120px" }}>소속</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "80px" }}>기관페이지</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "150px" }}>이메일</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "100px" }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
                             <span>세일즈 단계</span>
                             <select 
                               value={tableFilters.세일즈단계}
                               onChange={(e) => setTableFilters({...tableFilters, 세일즈단계: e.target.value})}
                               style={{ 
-                                fontSize: "11px", 
-                                padding: "2px 4px", 
+                                fontSize: "9px", 
+                                padding: "1px 2px", 
                                 border: "1px solid #ccc", 
                                 borderRadius: "3px",
                                 backgroundColor: "white"
@@ -4949,19 +5264,19 @@ function App() {
                             </select>
                           </div>
                         </th>
-                        <th style={{ padding: "12px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "12px" }}>문의날짜</th>
-                        <th style={{ padding: "12px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "12px" }}>계약날짜</th>
-                        <th style={{ padding: "12px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "12px" }}>사용기간</th>
-                        <th style={{ padding: "12px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "12px" }}>사용자원</th>
-                        <th style={{ padding: "12px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "12px", whiteSpace: "nowrap" }}>
-                          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "100px" }}>문의날짜</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "100px" }}>계약날짜</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "150px" }}>사용기간</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "200px" }}>사용자원</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", whiteSpace: "nowrap", width: "100px" }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
                             <span>사용유형</span>
                             <select 
                               value={tableFilters.사용유형}
                               onChange={(e) => setTableFilters({...tableFilters, 사용유형: e.target.value})}
                               style={{ 
-                                fontSize: "11px", 
-                                padding: "2px 4px", 
+                                fontSize: "9px", 
+                                padding: "1px 2px", 
                                 border: "1px solid #ccc", 
                                 borderRadius: "3px",
                                 backgroundColor: "white"
@@ -4973,10 +5288,10 @@ function App() {
                             </select>
                           </div>
                         </th>
-                        <th style={{ padding: "12px", textAlign: "right", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "12px" }}>견적/정산금액</th>
-                        <th style={{ padding: "12px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "12px" }}>비고</th>
-                        <th style={{ padding: "12px", textAlign: "center", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "12px" }}>업데이트 날짜</th>
-                        <th style={{ padding: "12px", textAlign: "center", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "12px" }}>작업</th>
+                        <th style={{ padding: "6px 8px", textAlign: "right", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "105px" }}>견적/정산금액</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "200px" }}>비고</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "120px" }}>업데이트 날짜</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "70px" }}>작업</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -4985,26 +5300,27 @@ function App() {
                           borderBottom: "1px solid #e9ecef",
                           backgroundColor: index % 2 === 0 ? "#ffffff" : "#f8f9fa"
                         }}>
-                          <td style={{ padding: "12px" }}>{customer.사업유형 || "-"}</td>
-                          <td style={{ padding: "12px", whiteSpace: "nowrap" }}>{customer.이름 || "-"}</td>
-                          <td style={{ padding: "12px" }}>{customer.기관 || "-"}</td>
-                          <td style={{ padding: "12px" }}>
+                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.사업유형 || "-"}</td>
+                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.담당자 || "-"}</td>
+                          <td style={{ padding: "6px 8px", fontSize: "11px", whiteSpace: "nowrap" }}>{customer.이름 || "-"}</td>
+                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.기관 || "-"}</td>
+                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>
                             {customer.기관페이지링크 ? (
-                              <a href={customer.기관페이지링크} target="_blank" rel="noopener noreferrer" style={{ color: "#007bff", textDecoration: "none" }}>
+                              <a href={customer.기관페이지링크} target="_blank" rel="noopener noreferrer" style={{ color: "#007bff", textDecoration: "none", fontSize: "11px" }}>
                                 링크
                               </a>
                             ) : "-"}
                           </td>
-                          <td style={{ padding: "12px" }}>{customer.이메일 || "-"}</td>
-                          <td style={{ padding: "12px" }}>{customer.세일즈단계 || "-"}</td>
-                          <td style={{ padding: "12px" }}>{customer.문의날짜 || "-"}</td>
-                          <td style={{ padding: "12px" }}>{customer.계약날짜 || "-"}</td>
-                          <td style={{ padding: "12px" }}>{customer.사용기간 || "-"}</td>
-                          <td style={{ padding: "12px" }}>
+                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.이메일 || "-"}</td>
+                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.세일즈단계 || "-"}</td>
+                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.문의날짜 || "-"}</td>
+                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.계약날짜 || "-"}</td>
+                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.사용기간 || "-"}</td>
+                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>
                             {customer.사용자원 && Array.isArray(customer.사용자원) && customer.사용자원.length > 0 ? (
-                              <div style={{ fontSize: "12px" }}>
+                              <div style={{ fontSize: "10px" }}>
                                 {customer.사용자원.map((item, idx) => (
-                                  <div key={idx} style={{ marginBottom: idx < customer.사용자원.length - 1 ? "4px" : "0" }}>
+                                  <div key={idx} style={{ marginBottom: idx < customer.사용자원.length - 1 ? "2px" : "0" }}>
                                     {resourceMap[item.resource] || item.resource}
                                     {item.quantity && ` (${item.quantity}개)`}
                                   </div>
@@ -5012,18 +5328,18 @@ function App() {
                               </div>
                             ) : (customer.사용자원 && typeof customer.사용자원 === 'string') ? (
                               // 이전 데이터 호환성 (문자열로 저장된 경우)
-                              <>
+                              <span style={{ fontSize: "11px" }}>
                                 {resourceMap[customer.사용자원] || customer.사용자원}
                                 {customer.사용자원수량 && ` (${customer.사용자원수량}개)`}
-                              </>
+                              </span>
                             ) : "-"}
                           </td>
-                          <td style={{ padding: "12px", whiteSpace: "nowrap" }}>{customer.사용유형 || "-"}</td>
-                          <td style={{ padding: "12px", textAlign: "right" }}>{customer["견적/정산금액"] || "-"}</td>
-                          <td style={{ padding: "12px" }}>{customer.비고 || "-"}</td>
-                          <td style={{ padding: "12px", textAlign: "center" }}>{customer.업데이트날짜 || "-"}</td>
-                          <td style={{ padding: "12px", textAlign: "center" }}>
-                            <div style={{ display: "flex", gap: "4px", justifyContent: "center" }}>
+                          <td style={{ padding: "6px 8px", fontSize: "11px", whiteSpace: "nowrap" }}>{customer.사용유형 || "-"}</td>
+                          <td style={{ padding: "6px 8px", fontSize: "11px", textAlign: "right" }}>{customer["견적/정산금액"] || "-"}</td>
+                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.비고 || "-"}</td>
+                          <td style={{ padding: "6px 8px", fontSize: "11px", textAlign: "center" }}>{customer.업데이트날짜 || "-"}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "center" }}>
+                            <div style={{ display: "flex", gap: "3px", justifyContent: "center" }}>
                               <button
                                 onClick={() => {
                                   // 사용기간 문자열 파싱
@@ -5067,13 +5383,13 @@ function App() {
                                   window.scrollTo({ top: 0, behavior: "smooth" });
                                 }}
                                 style={{
-                                  padding: "6px 12px",
+                                  padding: "4px 8px",
                                   backgroundColor: "#007bff",
                                   color: "white",
                                   border: "none",
                                   borderRadius: "4px",
                                   cursor: "pointer",
-                                  fontSize: "12px"
+                                  fontSize: "10px"
                                 }}
                               >
                                 수정
@@ -5094,13 +5410,13 @@ function App() {
                                   }
                                 }}
                                 style={{
-                                  padding: "6px 12px",
+                                  padding: "4px 8px",
                                   backgroundColor: "#dc3545",
                                   color: "white",
                                   border: "none",
                                   borderRadius: "4px",
                                   cursor: "pointer",
-                                  fontSize: "12px"
+                                  fontSize: "10px"
                                 }}
                               >
                                 삭제
