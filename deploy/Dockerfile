@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11
 
 # 작업 디렉토리 설정
 WORKDIR /app
@@ -16,8 +16,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 백엔드 코드 복사
 COPY backend/ .
 
-# 캐시 디렉토리 생성
+# 캐시 및 데이터 디렉토리 생성
 RUN mkdir -p /data/cache
+RUN mkdir -p /data/cloud_customers
 
 # 포트 노출
 EXPOSE 8000
@@ -25,6 +26,7 @@ EXPOSE 8000
 # 환경변수 설정
 ENV PYTHONPATH=/app
 ENV CACHE_DIR=/data/cache
+ENV CLOUD_CUSTOMERS_FILE=/data/cloud_customers/cloud_customers.json
 ENV DOCKER_ENV=true
 
 # 애플리케이션 실행

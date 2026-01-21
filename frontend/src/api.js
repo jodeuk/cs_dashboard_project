@@ -27,7 +27,7 @@ api.interceptors.request.use(
 );
 
 api.interceptors.response.use(
-  (response) => response.data,
+  (response) => response,
   (error) => {
     // 더 친절한 에러 처리
     if (error.code === "ECONNABORTED") {
@@ -68,8 +68,8 @@ export async function apiCall(method, endpoint, params = {}, data = {}, options 
     const finalUrl = `${api.defaults.baseURL}${apiEndpoint}`;
     console.log(`➡️ ${method.toUpperCase()} ${finalUrl}`, { params: config.params });
     const res = await api(config);
-    console.log(`✅ ${method.toUpperCase()} ${finalUrl}`, res);
-    return res;
+    console.log(`✅ ${method.toUpperCase()} ${finalUrl}`, res.data);
+    return res.data;   // ← 호출부는 항상 'data'만 받음
   } catch (err) {
     console.error(`❌ ${method.toUpperCase()} ${endpoint}`, err.message);
     throw err;
@@ -113,7 +113,11 @@ export function fetchPeriodData(params) {
   
   return apiCall("get", "/period-data", p, {}, { signal: periodController.signal })
     .then((res) => {
-      const data = Array.isArray(res.data) ? res.data : (res.data?.data ?? []);
+      // apiCall이 data만 반환하므로,
+      //   - 배열로 바로 오는 경우: 그 배열 사용
+      //   - 객체로 오고 내부에 data 배열이 있는 경우: 그 배열 사용
+      const data = Array.isArray(res) ? res
+                 : (Array.isArray(res?.data) ? res.data : []);
       lastPeriodData = data || [];
       return lastPeriodData;           // ✅ 항상 배열 반환
     })
@@ -150,11 +154,11 @@ export async function fetchUserchats(start, end, refreshMode = "cache", filterPa
   const params = { start, end, refresh_mode: refreshMode, ...filterParams };
   
   try {
-    const resp = await apiCall("get", "/period-data", params, undefined, { signal: periodController.signal });
+    const resp = await apiCall("get", "/period-data", params, {}, { signal: periodController.signal });
 
-    // 🔒 방어: 배열이 아니면 빈 배열로
+    // apiCall이 data만 반환
     const rows = Array.isArray(resp) ? resp
-              : (resp && Array.isArray(resp.data) ? resp.data : []);
+              : (Array.isArray(resp?.data) ? resp.data : []);
 
     console.log("🔍 fetchUserchats resp type:", Array.isArray(resp) ? "array" : typeof resp, "length:", rows.length);
     lastPeriodData = rows; // ✅ 성공 시 캐시 업데이트
@@ -199,6 +203,9 @@ export function clearCache() {
 export function refreshCache(start, end, force = true, include_csat = false) {
   return apiCall("get", "/cache/refresh", { start, end, force, include_csat });
 }
+export function fetchManagerStats(start, end) {
+  return apiCall("get", "/manager-stats", { start, end });
+}
 
 // API 상태 확인 (health)
 export async function checkApiHealth() {
@@ -210,6 +217,78 @@ export async function checkApiHealth() {
   } catch (err) {
     console.error("❌ API 연결 실패:", err);
     return { ok: false, url: `${ORIGIN_FOR_HEALTH}/health`, base: BASE, origin: ORIGIN_FOR_HEALTH };
+  }
+}
+
+// Cloud 고객 관리 API
+export async function fetchCloudCustomers() {
+  return apiCall("get", "/cloud-customers");
+}
+
+export async function createCloudCustomer(customerData) {
+  return apiCall("post", "/cloud-customers", {}, customerData);
+}
+
+export async function updateCloudCustomer(id, customerData) {
+  return apiCall("put", `/cloud-customers/${id}`, {}, customerData);
+}
+
+export async function deleteCloudCustomer(id) {
+  return apiCall("delete", `/cloud-customers/${id}`);
+}
+
+export async function fetchRefundCustomers() {
+  return apiCall("get", "/refund-customers");
+}
+
+export async function createRefundCustomer(refundData) {
+  return apiCall("post", "/refund-customers", {}, refundData);
+}
+
+export async function updateRefundCustomer(id, refundData) {
+  return apiCall("put", `/refund-customers/${id}`, {}, refundData);
+}
+
+export async function deleteRefundCustomer(id) {
+  return apiCall("delete", `/refund-customers/${id}`);
+}
+
+// CRM 고객(기관) 관리 API
+export async function fetchCrmCustomers() {
+  return apiCall("get", "/crm-customers");
+}
+
+export async function createCrmCustomer(crmData) {
+  return apiCall("post", "/crm-customers", {}, crmData);
+}
+
+export async function updateCrmCustomer(id, crmData) {
+  return apiCall("put", `/crm-customers/${id}`, {}, crmData);
+}
+
+export async function deleteCrmCustomer(id) {
+  return apiCall("delete", `/crm-customers/${id}`);
+}
+
+export async function uploadCrmCustomersCSV(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+  
+  const apiEndpoint = `/api/crm-customers/upload-csv`;
+  const finalUrl = `${BASE}${apiEndpoint}`;
+  
+  try {
+    console.log(`➡️ POST ${finalUrl} (file: ${file.name})`);
+    const res = await api.post(apiEndpoint, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    console.log(`✅ POST ${finalUrl}`, res.data);
+    return res.data;
+  } catch (err) {
+    console.error(`❌ POST ${apiEndpoint}`, err.message);
+    throw err;
   }
 }
 

@@ -17,20 +17,30 @@ export default function CSatChartSection({ csatSummary, totalResponses }) {
   }
 
   // 응답자 / 미응답자 데이터 변환 + 응답률 계산
-  const chartData = csatSummary.map(item => {
-    const denom = (typeof item.대상자수 === "number" ? item.대상자수 : totalResponses) || 0; // ✅ 대상자수 우선
-    const responseRate = denom > 0 ? Math.round((item.응답자수 / denom) * 100) : 0;
-    return {
-      // Y축엔 코드만 (예: "A-1")
-      항목: item.항목,
-      // 툴팁에서 쓸 원문 정보
-      질문: CSAT_QUESTIONS?.[item.항목] || "",
-      평균점수: item.평균점수,
-      응답자: item.응답자수,
-      미응답자: Math.max(0, denom - item.응답자수),  // ✅ 대상자수 기반
-      응답률: `${responseRate}%`,
-    };
-  });
+  const chartData = csatSummary
+    .map(item => {
+      const denom = (typeof item.대상자수 === "number" ? item.대상자수 : totalResponses) || 0; // ✅ 대상자수 우선
+      const 응답자수 = Number(item.응답자수) || 0;
+      const 평균점수 = Number(item.평균점수);
+      
+      // NaN, Infinity 체크
+      const safe응답자수 = isFinite(응답자수) && !isNaN(응답자수) ? 응답자수 : 0;
+      const safe평균점수 = isFinite(평균점수) && !isNaN(평균점수) ? 평균점수 : 0;
+      const safeDenom = isFinite(denom) && !isNaN(denom) && denom > 0 ? denom : 0;
+      
+      const responseRate = safeDenom > 0 ? Math.round((safe응답자수 / safeDenom) * 100) : 0;
+      return {
+        // Y축엔 코드만 (예: "A-1")
+        항목: item.항목,
+        // 툴팁에서 쓸 원문 정보
+        질문: CSAT_QUESTIONS?.[item.항목] || "",
+        평균점수: safe평균점수,
+        응답자: safe응답자수,
+        미응답자: Math.max(0, safeDenom - safe응답자수),  // ✅ 대상자수 기반
+        응답률: `${responseRate}%`,
+      };
+    })
+    .filter(item => item.항목); // 항목이 없는 데이터 제거
 
   // (추가) 항목별 평균점수 맵
   const avgByItem = Object.fromEntries(chartData.map(d => [d.항목, d.평균점수]));

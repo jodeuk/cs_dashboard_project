@@ -11,7 +11,8 @@ services:
     env_file:
       - ../.env
     volumes:
-      - cache_data:/data/cache
+      - ../cache:/data/cache  # 로컬 cache 디렉토리를 컨테이너 /data/cache에 마운트
+      - cloud_customers_data:/data/cloud_customers
       - ../backend:/app/backend
     restart: unless-stopped
     healthcheck:
@@ -51,5 +52,6 @@ networks:
     driver: bridge
 
 volumes:
-  cache_data:
+  # cache_data는 더 이상 사용하지 않음 (로컬 cache 디렉토리 직접 마운트)
+  cloud_customers_data:
     driver: local

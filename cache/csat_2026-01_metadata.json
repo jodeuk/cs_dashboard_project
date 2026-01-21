@@ -1,0 +1,14 @@
+{
+  "month": "2026-01",
+  "range": [
+    "2025-12-31",
+    "2026-01-02"
+  ],
+  "api_fetch": true,
+  "kind": "csat",
+  "saved_at": "2026-01-02T03:10:55.814364",
+  "data_count": 2,
+  "cache_version": "1.1",
+  "first_asked_start": "2026-01-01T20:03:39.980000",
+  "first_asked_end": "2026-01-02T19:14:10.341000"
+}

@@ -65,14 +65,14 @@ const FilterPanel = ({ options = {}, values, setValues }) => {
       const prev = prevOptsRef.current?.[f.key] || [];
       if (!f.parent) {
         const raw = (options[f.key] || []).filter((x) => x !== "전체");
-        base[f.key] = mergeUnique(prev, raw); // ✅ 선택값을 합치지 않음
+        base[f.key] = mergeUnique(prev, raw);
       } else {
-        const parents = values[f.parent] || [];
-        const hasParent = Array.isArray(parents) && parents.length > 0;
+        const parents = arr(values[f.parent]);
+        const hasParent = parents.length > 0;
         const union = hasParent
           ? getSubtypeUnion(f.mapKey, parents)
           : (options[f.key] || []).filter((x) => x !== "전체");
-        base[f.key] = mergeUnique(prev, union); // ✅ 선택값을 합치지 않음
+        base[f.key] = hasParent ? union : mergeUnique(prev, union);
       }
     });
     return base;
@@ -93,8 +93,9 @@ const FilterPanel = ({ options = {}, values, setValues }) => {
   };
 
   return (
-    <div style={{ backgroundColor:"#f8f9fa", padding:16, borderRadius:8, marginBottom:20,
-                  display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:16 }}>
+    <div style={{ backgroundColor:"#f8f9fa", padding:16, borderRadius:8, marginBottom:20 }}>
+      {/* 기존 필터들 */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:16 }}>
       {FILTER_FIELDS.map((field) => {
         const isChild = !!field.parent;
         const currentValue = arr(values[field.key]);
@@ -124,6 +125,7 @@ const FilterPanel = ({ options = {}, values, setValues }) => {
           </div>
         );
       })}
+      </div>
     </div>
   );
 };

@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: cs-dashboard-backend
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./deploy/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHONPATH
+        value: /app
+      - key: CACHE_DIR
+        value: /data/cache
+      - key: CLOUD_CUSTOMERS_FILE
+        value: /data/cloud_customers/cloud_customers.json
+      - key: DOCKER_ENV
+        value: true
+      - key: ADMIN_TOKEN
+        sync: false
+      - key: CHANNEL_TALK_API_KEY
+        sync: false
+
+  - type: web
+    name: cs-dashboard-frontend
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    envVars:
+      - key: REACT_APP_API_BASE
+        value: https://cs-dashboard-backend.onrender.com
+    envVarFiles:
+      - key: PUBLIC_URL
+        value: https://cs-dashboard-frontend.onrender.com
+
+disks:
+  - name: cloud-customers-disk
+    mountPath: /data
+    sizeGB: 1
+    serviceName: cs-dashboard-backend

@@ -55,8 +55,25 @@ export default function CSatTypeChartSection({ typeScores, typeLabel }) {
     }
     
     const data = typeScores[selectedType][selectedCsat];
+    // NaN, Infinity 필터링 및 안전한 값으로 변환
+    const safeData = data
+      .map(item => {
+        const 응답자수 = Number(item.응답자수) || 0;
+        const 평균점수 = Number(item.평균점수);
+        return {
+          ...item,
+          응답자수: isFinite(응답자수) && !isNaN(응답자수) ? 응답자수 : 0,
+          평균점수: isFinite(평균점수) && !isNaN(평균점수) ? 평균점수 : 0,
+        };
+      })
+      .filter(item => item[selectedType]); // 유형 값이 있는 것만
+    
     // 원본 변형 방지 - 응답자수 기준으로 정렬
-    return [...data].sort((a, b) => b.응답자수 - a.응답자수);
+    return [...safeData].sort((a, b) => {
+      const aVal = isFinite(a.응답자수) && !isNaN(a.응답자수) ? a.응답자수 : 0;
+      const bVal = isFinite(b.응답자수) && !isNaN(b.응답자수) ? b.응답자수 : 0;
+      return bVal - aVal;
+    });
   };
 
   const chartData = getTypeData();

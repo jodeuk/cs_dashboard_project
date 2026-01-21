@@ -4,12 +4,14 @@ import base64
 import asyncio
 import math
 import numpy as np
-from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, Header, Depends, Request
+import json
+import logging
+from fastapi import FastAPI, Query, HTTPException, BackgroundTasks, Header, Depends, Request, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import pandas as pd
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Any
 import io
 from pydantic import BaseModel
 from app.cs_utils import (
@@ -22,32 +24,53 @@ from app.cs_utils import (
     build_csat_type_scores,
     get_filtered_df
 )
-import json
+from app.db.json_db import load_json_db, save_json_db, file_lock, DEFAULT_DB_PATH
+
+LOG = logging.getLogger("uvicorn.error")
+
+# 파일 저장 경로 설정: CLOUD_CUSTOMERS_FILE 우선, 없으면 기존 파일 확인 후 기본값
+if not os.environ.get("CLOUD_CUSTOMERS_FILE") and not os.environ.get("JSON_DB_FILE"):
+    # 기존 파일이 있는지 확인 (backend/app/cloud_customers.json 우선)
+    legacy_path = os.path.join(os.path.dirname(__file__), "cloud_customers.json")
+    if os.path.exists(legacy_path):
+        os.environ.setdefault("JSON_DB_FILE", legacy_path)
+    else:
+        os.environ.setdefault("JSON_DB_FILE", "/tmp/cloud_customers.json")
+
+
+def _get_refund_db_path() -> str:
+    env_path = os.environ.get("REFUND_CUSTOMERS_FILE")
+    if env_path:
+        return env_path
+    base_dir = os.path.dirname(DEFAULT_DB_PATH) if DEFAULT_DB_PATH else ""
+    if not base_dir:
+        base_dir = "/tmp"
+    return os.path.join(base_dir, "refund_customers.json")
+
+
+def _get_crm_db_path() -> str:
+    """
+    CRM 고객(기관) 정보를 저장할 JSON 파일 경로를 반환.
+    환경변수 CRM_CUSTOMERS_FILE 이 우선, 없으면 cloud/refund 와 동일한 디렉토리에 저장.
+    """
+    env_path = os.environ.get("CRM_CUSTOMERS_FILE")
+    if env_path:
+        return env_path
+    base_dir = os.path.dirname(DEFAULT_DB_PATH) if DEFAULT_DB_PATH else ""
+    if not base_dir:
+        base_dir = "/tmp"
+    return os.path.join(base_dir, "crm_customers.json")
+
+
+REFUND_DB_PATH = _get_refund_db_path()
+CRM_DB_PATH = _get_crm_db_path()
+
+def _clean_str(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
 
 # ---- 유틸 함수 ----
-# 문의 데이터 AIDT/이메일 저장용 JSON 파일 경로
-INQUIRY_METADATA_FILE = os.environ.get("INQUIRY_METADATA_FILE", "/tmp/inquiry_metadata.json")
-
-def load_inquiry_metadata():
-    """문의 메타데이터(AIDT, 이메일) 로드"""
-    if not os.path.exists(INQUIRY_METADATA_FILE):
-        return {}
-    try:
-        with open(INQUIRY_METADATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"[INQUIRY_METADATA] 로드 실패: {e}")
-        return {}
-
-def save_inquiry_metadata(data):
-    """문의 메타데이터(AIDT, 이메일) 저장"""
-    try:
-        os.makedirs(os.path.dirname(INQUIRY_METADATA_FILE), exist_ok=True)
-        with open(INQUIRY_METADATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[INQUIRY_METADATA] 저장 실패: {e}")
-        raise
 def _iso_millis(series):
     s = pd.to_datetime(series, errors="coerce")
     return s.dt.strftime("%Y-%m-%dT%H:%M:%S.%f").str.slice(0, 23)
@@ -197,6 +220,130 @@ async def clear_cache():
         raise HTTPException(status_code=500, detail="캐시 삭제 실패")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"캐시 삭제 실패: {str(e)}")
+
+@app.get("/api/cache/check-firstasked")
+async def check_cache_firstasked():
+    """캐시에 firstAskedAt이 없는 데이터가 있는지 확인"""
+    try:
+        import pandas as pd
+        cache_dir = server_cache.cache_dir
+        
+        # 캐시 디렉토리 확인
+        if not os.path.exists(cache_dir):
+            return {
+                "error": f"캐시 디렉토리가 없습니다: {cache_dir}",
+                "cache_dir": cache_dir,
+                "files_checked": 0,
+                "results": []
+            }
+        
+        try:
+            cache_files = [f for f in os.listdir(cache_dir) if f.startswith("userchats_") and f.endswith(".pkl")]
+        except Exception as e:
+            return {
+                "error": f"캐시 디렉토리 읽기 실패: {str(e)}",
+                "cache_dir": cache_dir,
+                "files_checked": 0,
+                "results": []
+            }
+        
+        results = []
+        for cache_file in sorted(cache_files):
+            cache_path = os.path.join(cache_dir, cache_file)
+            try:
+                df = pd.read_pickle(cache_path)
+                
+                if df.empty:
+                    results.append({
+                        "file": cache_file,
+                        "error": "빈 DataFrame"
+                    })
+                    continue
+                
+                if 'firstAskedAt' not in df.columns or 'createdAt' not in df.columns:
+                    results.append({
+                        "file": cache_file,
+                        "error": "필수 컬럼이 없습니다",
+                        "columns": list(df.columns) if 'firstAskedAt' not in df.columns else None
+                    })
+                    continue
+                
+                # firstAskedAt이 NaN인 행
+                first_na = df['firstAskedAt'].isna()
+                first_na_count = int(first_na.sum())
+                
+                # createdAt은 있지만 firstAskedAt이 없는 행
+                created_not_na = df['createdAt'].notna()
+                both_condition = first_na & created_not_na
+                both_count = int(both_condition.sum())
+                
+                # direction 분포
+                direction_counts = {}
+                if 'direction' in df.columns:
+                    direction_counts = {str(k): int(v) for k, v in df['direction'].value_counts().to_dict().items()}
+                
+                # phone 데이터 통계
+                phone_stats = {}
+                if 'mediumType' in df.columns:
+                    phone_df = df[df['mediumType'] == 'phone']
+                    if len(phone_df) > 0:
+                        phone_first_na = phone_df['firstAskedAt'].isna()
+                        phone_created_not_na = phone_df['createdAt'].notna()
+                        phone_both = phone_first_na & phone_created_not_na
+                        phone_both_count = int(phone_both.sum())
+                        
+                        phone_direction = {}
+                        if 'direction' in phone_df.columns:
+                            phone_direction = {str(k): int(v) for k, v in phone_df['direction'].value_counts().to_dict().items()}
+                        
+                        # 샘플 데이터
+                        samples = []
+                        if phone_both_count > 0:
+                            phone_sample = phone_df[phone_both].head(3)
+                            for idx, row in phone_sample.iterrows():
+                                first_val = row.get('firstAskedAt')
+                                created_val = row.get('createdAt')
+                                samples.append({
+                                    "userId": str(row.get('userId', 'N/A')),
+                                    "direction": str(row.get('direction', 'N/A')),
+                                    "firstAskedAt": str(first_val) if pd.notna(first_val) else None,
+                                    "createdAt": str(created_val) if pd.notna(created_val) else None,
+                                })
+                        
+                        phone_stats = {
+                            "total": int(len(phone_df)),
+                            "firstAskedAt_na_but_createdAt_exists": phone_both_count,
+                            "direction_distribution": phone_direction,
+                            "samples": samples
+                        }
+                
+                results.append({
+                    "file": cache_file,
+                    "total_rows": int(len(df)),
+                    "firstAskedAt_na_count": first_na_count,
+                    "firstAskedAt_na_percent": round(first_na_count / len(df) * 100, 2) if len(df) > 0 else 0,
+                    "createdAt_exists_but_firstAskedAt_na": both_count,
+                    "direction_distribution": direction_counts,
+                    "phone_stats": phone_stats
+                })
+            except Exception as e:
+                import traceback
+                error_detail = f"{str(e)}\n{traceback.format_exc()}"
+                results.append({
+                    "file": cache_file,
+                    "error": str(e),
+                    "error_detail": error_detail
+                })
+        
+        return {
+            "cache_dir": cache_dir,
+            "files_checked": len(cache_files),
+            "results": results
+        }
+    except Exception as e:
+        import traceback
+        error_detail = f"{str(e)}\n{traceback.format_exc()}"
+        raise HTTPException(status_code=500, detail=f"캐시 확인 실패: {error_detail}")
 
 # ---- 4-1. 전구간 재수집 작업 본체 ----
 async def _rebuild_all_cache_task(start: str, end: str):
@@ -398,10 +545,19 @@ async def userchats(start: str = Query(...), end: str = Query(...), force_refres
         if df.empty:
             return []
         # get_cached_data에서 이미 기간 필터 완료 → 그대로 반환
-        df = df[df["firstAskedAt"].notna()]
+        # firstAskedAt이 없어도 createdAt이 있으면 포함 (OB 데이터 처리)
+        # firstAskedAt 또는 createdAt 중 하나라도 있어야 함
+        has_first = df["firstAskedAt"].notna()
+        has_created = pd.to_datetime(df.get("createdAt", pd.Series()), errors='coerce').notna()
+        df = df[has_first | has_created]
+        
         s = pd.to_datetime(start)
         e = pd.to_datetime(end)
-        filtered = df[(df["firstAskedAt"] >= s) & (df["firstAskedAt"] <= e)].copy()
+        # firstAskedAt이 없으면 createdAt 사용
+        date_for_filter = pd.to_datetime(df["firstAskedAt"], errors='coerce').fillna(
+            pd.to_datetime(df.get("createdAt"), errors='coerce')
+        )
+        filtered = df[(date_for_filter >= s) & (date_for_filter <= e)].copy()
         
         # filtered 만들고 나서
         for col in ["firstAskedAt","createdAt","openedAt","closedAt"]:
@@ -411,16 +567,6 @@ async def userchats(start: str = Query(...), end: str = Query(...), force_refres
         # NaN/Inf 값 제거
         filtered = filtered.replace([np.inf, -np.inf], np.nan)
         data_dict = filtered.to_dict(orient="records")
-        
-        # 문의 메타데이터(AIDT, 이메일) 병합
-        metadata = load_inquiry_metadata()
-        for record in data_dict:
-            user_chat_id = str(record.get("userChatId", ""))
-            if user_chat_id and user_chat_id in metadata:
-                record["aidt"] = metadata[user_chat_id].get("aidt", "")
-                record["이메일"] = metadata[user_chat_id].get("이메일", metadata[user_chat_id].get("email", ""))
-                record["email"] = metadata[user_chat_id].get("email", metadata[user_chat_id].get("이메일", ""))
-        
         return _sanitize_json(data_dict)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"캐시 데이터 조회 실패: {str(e)}")
@@ -576,6 +722,225 @@ async def csat_refresh(start: str = Query(...), end: str = Query(...)):
         return {"message": "CSAT 강제 갱신 완료", "saved_rows": saved}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"CSAT 강제 갱신 실패: {str(e)}")
+
+# 5-6. 담당자별 통계 (managerIds와 assigneeId가 동일한 경우만 집계)
+@app.get("/api/manager-stats")
+async def manager_stats(start: str = Query(...), end: str = Query(...)):
+    """
+    담당자별 문의량과 문의유형 비율을 반환합니다.
+    managerIds와 assigneeId가 동일한 경우만 집계합니다.
+    """
+    try:
+        end = limit_end_date(end)
+        df = await get_cached_data(start, end, refresh_mode="cache")
+        
+        if df is None or df.empty:
+            print(f"[MANAGER_STATS] 데이터 없음: df is None or empty")
+            return {
+                "manager_counts": [],
+                "manager_inquiry_types": {}
+            }
+        
+        # 담당자 ID -> 이름 매핑
+        manager_map = {
+            "557191": "안예은",
+            "547547": "조용준",
+            "531024": "우지훈"
+        }
+        
+        # managerIds 리스트에 assigneeId와 동일한 값이 있는 경우만 필터링
+        def _check_manager_match(manager_ids, assignee_id):
+            """managerIds 리스트에 assigneeId와 동일한 값이 있는지 확인"""
+            try:
+                if hasattr(manager_ids, '__iter__') and not isinstance(manager_ids, (str, list)):
+                    manager_ids = list(manager_ids)
+                if hasattr(assignee_id, '__iter__') and not isinstance(assignee_id, (str, int, float)):
+                    assignee_id = list(assignee_id)[0] if len(list(assignee_id)) > 0 else None
+                
+                if assignee_id is None:
+                    return False
+                if manager_ids is None:
+                    return False
+                
+                try:
+                    if pd.isna(assignee_id):
+                        return False
+                except (ValueError, TypeError):
+                    pass
+                
+                try:
+                    if pd.isna(manager_ids):
+                        return False
+                except (ValueError, TypeError):
+                    pass
+                
+                assignee_str = str(assignee_id).strip()
+                
+                if isinstance(manager_ids, list):
+                    for mgr_id in manager_ids:
+                        if str(mgr_id).strip() == assignee_str:
+                            return True
+                    return False
+                else:
+                    return str(manager_ids).strip() == assignee_str
+            except Exception as e:
+                print(f"[MANAGER_STATS] _check_manager_match 오류: {e}")
+                return False
+        
+        # managerIds와 assigneeId가 동일한 행만 필터링
+        filtered_df = df.copy()
+        
+        if "managerIds" not in filtered_df.columns:
+            filtered_df["managerIds"] = None
+        if "assigneeId" not in filtered_df.columns:
+            filtered_df["assigneeId"] = None
+        
+        def _check_match_row(row):
+            try:
+                return _check_manager_match(row.get("managerIds"), row.get("assigneeId"))
+            except Exception as e:
+                print(f"[MANAGER_STATS] _check_match_row 오류: {e}")
+                return False
+        
+        mask = filtered_df.apply(_check_match_row, axis=1)
+        filtered_df = filtered_df[mask].copy()
+        
+        if filtered_df.empty:
+            return {
+                "manager_counts": [],
+                "manager_inquiry_types": {}
+            }
+        
+        # 1. 담당자별 문의량 집계
+        def _has_manager_id(manager_ids, target_id):
+            """managerIds 리스트에 target_id가 있는지 확인"""
+            try:
+                if hasattr(manager_ids, '__iter__') and not isinstance(manager_ids, (str, list)):
+                    manager_ids = list(manager_ids)
+                
+                if pd.isna(manager_ids) or manager_ids is None:
+                    return False
+                target_str = str(target_id).strip()
+                if isinstance(manager_ids, list):
+                    for mgr_id in manager_ids:
+                        if str(mgr_id).strip() == target_str:
+                            return True
+                    return False
+                return str(manager_ids).strip() == target_str
+            except Exception as e:
+                print(f"[MANAGER_STATS] _has_manager_id 오류: {e}")
+                return False
+        
+        manager_counts = []
+        for manager_id, manager_name in manager_map.items():
+            # managerIds에 해당 ID가 포함된 행만 필터링
+            manager_mask = filtered_df["managerIds"].apply(
+                lambda mgr_ids: _has_manager_id(mgr_ids, manager_id)
+            )
+            manager_data = filtered_df[manager_mask].copy()
+            
+            if len(manager_data) == 0:
+                manager_counts.append({
+                    "managerId": manager_id,
+                    "managerName": manager_name,
+                    "total": 0,
+                    "chat": 0,
+                    "phone": 0,
+                    "phoneIB": 0,
+                    "phoneOB": 0
+                })
+                continue
+            
+            # mediumType과 direction 컬럼 확인
+            if "mediumType" not in manager_data.columns:
+                manager_data["mediumType"] = None
+            if "direction" not in manager_data.columns:
+                manager_data["direction"] = None
+            
+            # 채팅 상담 (mediumType != "phone")
+            chat_count = len(manager_data[manager_data["mediumType"] != "phone"])
+            
+            # 유선 상담 (mediumType == "phone")
+            phone_data = manager_data[manager_data["mediumType"] == "phone"].copy()
+            
+            # 같은 날짜에 같은 userId가 여러 번 나타나면 중복 제거
+            if len(phone_data) > 0 and "userId" in phone_data.columns and "firstAskedAt" in phone_data.columns:
+                # firstAskedAt을 날짜만 추출 (시간 제외)
+                phone_data["date_only"] = pd.to_datetime(phone_data["firstAskedAt"], errors="coerce").dt.date
+                # userId와 날짜 기준으로 중복 제거 (첫 번째 것만 유지)
+                phone_data = phone_data.drop_duplicates(subset=["userId", "date_only"], keep="first")
+                # 임시 컬럼 제거
+                phone_data = phone_data.drop(columns=["date_only"])
+            
+            phone_count = len(phone_data)
+            
+            # 유선 상담 IB (mediumType == "phone" AND direction == "IB")
+            phone_ib_count = len(phone_data[phone_data["direction"] == "IB"])
+            
+            # 유선 상담 OB (mediumType == "phone" AND direction == "OB")
+            phone_ob_count = len(phone_data[phone_data["direction"] == "OB"])
+            
+            manager_counts.append({
+                "managerId": manager_id,
+                "managerName": manager_name,
+                "total": int(len(manager_data)),
+                "chat": int(chat_count),
+                "phone": int(phone_count),
+                "phoneIB": int(phone_ib_count),
+                "phoneOB": int(phone_ob_count)
+            })
+        
+        # 문의량 순으로 정렬
+        manager_counts.sort(key=lambda x: x["total"], reverse=True)
+        
+        # 2. 담당자별 문의유형 비율 집계
+        manager_inquiry_types = {}
+        for manager_id, manager_name in manager_map.items():
+            # managerIds에 해당 ID가 포함된 행만 필터링
+            manager_mask = filtered_df["managerIds"].apply(
+                lambda mgr_ids: _has_manager_id(mgr_ids, manager_id)
+            )
+            manager_data = filtered_df[manager_mask].copy()
+            if len(manager_data) == 0:
+                continue
+            
+            # 문의유형별 집계
+            inquiry_type_counts = {}
+            for _, row in manager_data.iterrows():
+                inquiry_type = row.get("문의유형")
+                if pd.isna(inquiry_type) or not inquiry_type:
+                    inquiry_type = "미분류"
+                else:
+                    inquiry_type = str(inquiry_type).strip()
+                
+                inquiry_type_counts[inquiry_type] = inquiry_type_counts.get(inquiry_type, 0) + 1
+            
+            # 비율 계산
+            total = len(manager_data)
+            inquiry_type_ratios = []
+            for inquiry_type, count in sorted(inquiry_type_counts.items(), key=lambda x: x[1], reverse=True):
+                inquiry_type_ratios.append({
+                    "문의유형": inquiry_type,
+                    "count": int(count),
+                    "ratio": round((count / total) * 100, 1) if total > 0 else 0.0
+                })
+            
+            manager_inquiry_types[manager_id] = {
+                "managerName": manager_name,
+                "total": int(total),
+                "inquiryTypes": inquiry_type_ratios
+            }
+        
+        return {
+            "manager_counts": manager_counts,
+            "manager_inquiry_types": manager_inquiry_types
+        }
+        
+    except Exception as e:
+        print(f"[MANAGER_STATS] 오류: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"담당자별 통계 조회 실패: {str(e)}")
 
 # 5-5-1. CSAT 텍스트 분석 (comment_3, comment_6)
 @app.get("/api/csat-text-analysis")
@@ -864,28 +1229,615 @@ async def admin_full_refresh(
         "range": [start, end]
     }
 
-# ---- 9. 문의 메타데이터(AIDT/이메일) 관리 API ----
-@app.put("/api/inquiry-metadata/{user_chat_id}")
-async def update_inquiry_metadata(user_chat_id: str, metadata: dict):
-    """문의 메타데이터(AIDT, 이메일) 업데이트"""
-    try:
-        data = load_inquiry_metadata()
-        if user_chat_id not in data:
-            data[user_chat_id] = {}
-        data[user_chat_id].update({
-            "aidt": metadata.get("aidt", ""),
-            "이메일": metadata.get("이메일", ""),
-            "email": metadata.get("email", metadata.get("이메일", ""))
-        })
-        save_inquiry_metadata(data)
-        return {"ok": True, "userChatId": user_chat_id, "metadata": data[user_chat_id]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"메타데이터 저장 실패: {str(e)}")
+# ---- 8. Cloud 고객 관리 API ----
 
-@app.get("/api/inquiry-metadata")
-async def get_inquiry_metadata():
-    """모든 문의 메타데이터 조회"""
+# Cloud 고객 모델
+class CloudCustomer(BaseModel):
+    id: Optional[int] = None
+    사업유형: str
+    담당자: Optional[str] = ""
+    이름: str
+    기관: Optional[str] = ""
+    이메일: Optional[str] = ""
+    사용자원: Optional[Any] = None  # 배열 또는 문자열 지원
+    사용유형: Optional[str] = ""
+    사용기간: Optional[str] = ""
+    계약정산금액: Optional[str] = ""
+    비고: Optional[str] = ""
+
+class CloudCustomerCreate(BaseModel):
+    사업유형: str
+    담당자: Optional[str] = ""
+    이름: str
+    기관: Optional[str] = ""
+    이메일: Optional[str] = ""
+    사용자원: Optional[Any] = None  # 배열 또는 문자열 지원
+    사용유형: Optional[str] = ""
+    사용기간: Optional[str] = ""
+    계약정산금액: Optional[str] = ""
+    비고: Optional[str] = ""
+
+# Cloud/환불/CRM 고객 데이터는 JSON DB로 관리
+
+
+class RefundCustomer(BaseModel):
+    id: Optional[int] = None
+    이름: str
+    기관: Optional[str] = ""
+    기관링크: Optional[str] = ""
+    크레딧충전금액: Optional[str] = ""
+    환불금액: str
+    환불날짜: str
+    환불사유: Optional[str] = ""
+
+
+class RefundCustomerCreate(BaseModel):
+    이름: str
+    기관: Optional[str] = ""
+    기관링크: Optional[str] = ""
+    크레딧충전금액: Optional[str] = ""
+    환불금액: str
+    환불날짜: str
+    환불사유: Optional[str] = ""
+
+
+class CrmCustomer(BaseModel):
+    id: Optional[int] = None
+    기관생성일: Optional[str] = ""
+    성함: str
+    이메일: str
+    카드미등록발송일자: Optional[str] = ""
+    카드등록일: Optional[str] = ""
+    크레딧충전일: Optional[str] = ""
+    기관링크: Optional[str] = ""
+    기관어드민링크: Optional[str] = ""
+
+
+class CrmCustomerCreate(BaseModel):
+    기관생성일: Optional[str] = ""
+    성함: str
+    이메일: str
+    카드미등록발송일자: Optional[str] = ""
+    카드등록일: Optional[str] = ""
+    크레딧충전일: Optional[str] = ""
+    기관링크: Optional[str] = ""
+    기관어드민링크: Optional[str] = ""
+
+@app.get("/api/cloud-customers")
+async def get_cloud_customers():
+    """Cloud 고객 목록 조회"""
+    with file_lock(DEFAULT_DB_PATH):
+        rows = load_json_db()
+        # 기존 고객 중 업데이트 날짜가 없는 경우 현재 날짜로 설정
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        updated = False
+        for row in rows:
+            if "업데이트날짜" not in row or not row.get("업데이트날짜"):
+                row["업데이트날짜"] = current_date
+                updated = True
+        if updated:
+            save_json_db(rows)
+        # 업데이트 날짜 최신순으로 정렬
+        rows.sort(key=lambda x: x.get("업데이트날짜", ""), reverse=True)
+        return rows
+
+@app.post("/api/cloud-customers")
+async def create_cloud_customer(customer: dict):
+    """신규 고객 등록"""
+    # 필수 필드 검증
+    if not customer.get("사업유형") or not customer.get("이름"):
+        raise HTTPException(status_code=400, detail="사업유형과 이름은 필수 입력 항목입니다.")
+    
+    with file_lock(DEFAULT_DB_PATH):
+        rows = load_json_db()
+        new_id = (max([r.get("id", 0) for r in rows]) + 1) if rows else 1
+        
+        # 새 고객 생성 (프론트엔드 필드명 유지)
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        new_customer = {
+            "id": new_id,
+            "사업유형": customer.get("사업유형", ""),
+            "담당자": customer.get("담당자", ""),
+            "이름": customer.get("이름", ""),
+            "기관": customer.get("기관", ""),
+            "기관페이지링크": customer.get("기관페이지링크", ""),
+            "이메일": customer.get("이메일", ""),
+            "문의날짜": customer.get("문의날짜", ""),
+            "계약날짜": customer.get("계약날짜", ""),
+            "세일즈단계": customer.get("세일즈단계", ""),
+            "사용자원": customer.get("사용자원", ""),
+            "사용자원수량": customer.get("사용자원수량", ""),
+            "사용유형": customer.get("사용유형", ""),
+            "사용기간": customer.get("사용기간", ""),
+            "견적/정산금액": customer.get("견적/정산금액", customer.get("계약정산금액", "")),
+            "비고": customer.get("비고", ""),
+            "업데이트날짜": current_date
+        }
+        
+        rows.append(new_customer)
+        save_json_db(rows)
+        return new_customer
+
+@app.put("/api/cloud-customers/{customer_id}")
+async def update_cloud_customer(customer_id: int, customer: dict):
+    """고객 정보 수정"""
+    # 필수 필드 검증
+    if not customer.get("사업유형") or not customer.get("이름"):
+        raise HTTPException(status_code=400, detail="사업유형과 이름은 필수 입력 항목입니다.")
+    
+    with file_lock(DEFAULT_DB_PATH):
+        rows = load_json_db()
+        idx = next((i for i, r in enumerate(rows) if r.get("id") == customer_id), -1)
+        if idx < 0:
+            raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
+        
+        # 기존 데이터 가져오기
+        existing = rows[idx]
+        
+        # 담당자 필드를 제외한 다른 필드가 변경되었는지 확인
+        fields_to_check = [
+            "사업유형", "이름", "기관", "기관페이지링크", "이메일", 
+            "문의날짜", "계약날짜", "세일즈단계", "사용자원", "사용자원수량",
+            "사용유형", "사용기간", "견적/정산금액", "비고"
+        ]
+        
+        other_fields_changed = False
+        for field in fields_to_check:
+            existing_value = existing.get(field, "")
+            new_value = customer.get(field, customer.get("계약정산금액", "") if field == "견적/정산금액" else "")
+            
+            # 사용자원은 배열일 수 있으므로 JSON 문자열로 비교
+            if field == "사용자원":
+                import json
+                existing_json = json.dumps(existing_value, sort_keys=True) if existing_value else ""
+                new_json = json.dumps(new_value, sort_keys=True) if new_value else ""
+                if existing_json != new_json:
+                    other_fields_changed = True
+                    break
+            else:
+                if str(existing_value) != str(new_value):
+                    other_fields_changed = True
+                    break
+        
+        # 정보 업데이트 (프론트엔드 필드명 유지)
+        update_data = {
+            "사업유형": customer.get("사업유형", ""),
+            "담당자": customer.get("담당자", ""),
+            "이름": customer.get("이름", ""),
+            "기관": customer.get("기관", ""),
+            "기관페이지링크": customer.get("기관페이지링크", ""),
+            "이메일": customer.get("이메일", ""),
+            "문의날짜": customer.get("문의날짜", ""),
+            "계약날짜": customer.get("계약날짜", ""),
+            "세일즈단계": customer.get("세일즈단계", ""),
+            "사용자원": customer.get("사용자원", ""),
+            "사용자원수량": customer.get("사용자원수량", ""),
+            "사용유형": customer.get("사용유형", ""),
+            "사용기간": customer.get("사용기간", ""),
+            "견적/정산금액": customer.get("견적/정산금액", customer.get("계약정산금액", "")),
+            "비고": customer.get("비고", ""),
+        }
+        
+        # 담당자 필드만 변경된 경우가 아니면 업데이트 날짜 변경
+        if other_fields_changed:
+            current_date = datetime.now().strftime("%Y-%m-%d")
+            update_data["업데이트날짜"] = current_date
+        else:
+            # 담당자만 변경된 경우 기존 업데이트 날짜 유지
+            update_data["업데이트날짜"] = existing.get("업데이트날짜", "")
+        
+        rows[idx] = {
+            **existing,
+            **update_data,
+            "id": customer_id
+        }
+        save_json_db(rows)
+        return rows[idx]
+
+@app.delete("/api/cloud-customers/{customer_id}")
+async def delete_cloud_customer(customer_id: int):
+    """고객 삭제"""
+    with file_lock(DEFAULT_DB_PATH):
+        rows = load_json_db()
+        new_rows = [r for r in rows if r.get("id") != customer_id]
+        if len(new_rows) == len(rows):
+            raise HTTPException(status_code=404, detail="고객을 찾을 수 없습니다.")
+        save_json_db(new_rows)
+        return {"ok": True}
+
+@app.post("/api/cloud-customers/migrate")
+async def migrate_from_memory_to_json():
+    """레거시 메모리 캐시(server_cache['cloud_customers']) → JSON 파일로 강제 덤프"""
     try:
-        return load_inquiry_metadata()
+        legacy_rows = server_cache.get("cloud_customers") or []
+        if not legacy_rows:
+            return {"ok": True, "migrated": 0, "detail": "legacy empty"}
+        with file_lock(DEFAULT_DB_PATH):
+            current = load_json_db()
+            # id 기준으로 머지(파일에 없던 id만 추가)
+            have = {r.get("id") for r in current if isinstance(r, dict)}
+            to_add = [r for r in legacy_rows if isinstance(r, dict) and r.get("id") not in have]
+            merged = (current or []) + to_add
+            save_json_db(merged)
+            return {"ok": True, "migrated": len(to_add), "detail": f"{len(to_add)}건 추가됨"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"메타데이터 조회 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"마이그레이션 실패: {str(e)}")
+
+# ---- 9. 환불 고객 관리 API ----
+
+@app.get("/api/refund-customers")
+async def get_refund_customers():
+    """환불 고객 목록 조회"""
+    with file_lock(REFUND_DB_PATH):
+        rows = load_json_db(REFUND_DB_PATH)
+        if not isinstance(rows, list):
+            rows = []
+        # 등록일 최신순으로 정렬
+        rows.sort(key=lambda x: x.get("등록일", x.get("업데이트날짜", "")), reverse=True)
+        return rows
+
+@app.post("/api/refund-customers")
+async def create_refund_customer(refund: RefundCustomerCreate):
+    """신규 환불 고객 등록"""
+    if not refund.이름 or not refund.환불금액 or not refund.환불날짜:
+        raise HTTPException(status_code=400, detail="이름, 환불금액, 환불날짜는 필수 입력 항목입니다.")
+    
+    with file_lock(REFUND_DB_PATH):
+        rows = load_json_db(REFUND_DB_PATH)
+        if not isinstance(rows, list):
+            rows = []
+        
+        # 새 ID 생성
+        existing_ids = [r.get("id") for r in rows if isinstance(r, dict) and r.get("id")]
+        new_id = (max(existing_ids) + 1) if existing_ids else 1
+        
+        now_iso = datetime.now().isoformat()
+        new_refund = {
+            "id": new_id,
+            "이름": _clean_str(refund.이름),
+            "기관": _clean_str(refund.기관),
+            "기관링크": _clean_str(refund.기관링크),
+            "크레딧충전금액": _clean_str(refund.크레딧충전금액),
+            "환불금액": _clean_str(refund.환불금액),
+            "환불날짜": _clean_str(refund.환불날짜),
+            "환불사유": _clean_str(refund.환불사유),
+            "등록일": now_iso,
+            "업데이트날짜": now_iso,
+        }
+        
+        rows.append(new_refund)
+        save_json_db(rows, REFUND_DB_PATH)
+        return new_refund
+
+@app.put("/api/refund-customers/{refund_id}", response_model=RefundCustomer)
+async def update_refund_customer(refund_id: int, refund: RefundCustomerCreate):
+    """환불 고객 정보 수정"""
+    if not refund.이름 or not refund.환불금액 or not refund.환불날짜:
+        raise HTTPException(status_code=400, detail="이름, 환불금액, 환불날짜는 필수 입력 항목입니다.")
+    
+    with file_lock(REFUND_DB_PATH):
+        rows = load_json_db(REFUND_DB_PATH)
+        if not isinstance(rows, list):
+            rows = []
+        
+        target_index = -1
+        for idx, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+            rid = row.get("id")
+            rid_val = rid
+            if isinstance(rid, str) and rid.isdigit():
+                rid_val = int(rid)
+            if rid_val == refund_id:
+                row["id"] = int(rid)
+                target_index = idx
+                break
+
+        if target_index < 0:
+            raise HTTPException(status_code=404, detail="환불 고객을 찾을 수 없습니다.")
+
+        existing = rows[target_index] if isinstance(rows[target_index], dict) else {}
+        now_iso = datetime.now().isoformat()
+
+        rows[target_index] = {
+            **existing,
+            **{
+                "id": refund_id,
+                "이름": _clean_str(refund.이름),
+                "기관": _clean_str(refund.기관),
+                "기관링크": _clean_str(refund.기관링크),
+                "크레딧충전금액": _clean_str(refund.크레딧충전금액),
+                "환불금액": _clean_str(refund.환불금액),
+                "환불날짜": _clean_str(refund.환불날짜),
+                "환불사유": _clean_str(refund.환불사유),
+                "업데이트날짜": now_iso,
+            },
+        }
+
+        if not rows[target_index].get("등록일"):
+            rows[target_index]["등록일"] = now_iso
+
+        save_json_db(rows, REFUND_DB_PATH)
+        return rows[target_index]
+
+
+@app.delete("/api/refund-customers/{refund_id}")
+async def delete_refund_customer(refund_id: int):
+    """환불 고객 삭제"""
+    with file_lock(REFUND_DB_PATH):
+        rows = load_json_db(REFUND_DB_PATH)
+        if not isinstance(rows, list):
+            rows = []
+
+        kept_rows = []
+        removed = False
+        for row in rows:
+            if not isinstance(row, dict):
+                kept_rows.append(row)
+                continue
+
+            rid = row.get("id")
+            rid_val = rid
+            if isinstance(rid, str) and rid.isdigit():
+                rid_val = int(rid)
+
+            if rid_val == refund_id:
+                removed = True
+                continue
+            kept_rows.append(row)
+
+        if not removed:
+            raise HTTPException(status_code=404, detail="환불 고객을 찾을 수 없습니다.")
+
+        save_json_db(kept_rows, REFUND_DB_PATH)
+        return {"ok": True}
+
+
+# ---- 10. CRM 고객(기관) 관리 API ----
+
+@app.get("/api/crm-customers")
+async def get_crm_customers():
+    """CRM 고객(기관) 목록 조회"""
+    with file_lock(CRM_DB_PATH):
+        rows = load_json_db(CRM_DB_PATH)
+        if not isinstance(rows, list):
+            rows = []
+        # 등록일 또는 업데이트날짜 기준 최신순 정렬
+        rows.sort(key=lambda x: x.get("등록일", x.get("업데이트날짜", "")), reverse=True)
+        return rows
+
+
+@app.post("/api/crm-customers")
+async def create_crm_customer(crm: CrmCustomerCreate):
+    """신규 CRM 고객(기관) 등록"""
+    if not crm.성함 or not crm.이메일:
+        raise HTTPException(status_code=400, detail="성함과 이메일은 필수 입력 항목입니다.")
+
+    with file_lock(CRM_DB_PATH):
+        rows = load_json_db(CRM_DB_PATH)
+        if not isinstance(rows, list):
+            rows = []
+
+        existing_ids = [r.get("id") for r in rows if isinstance(r, dict) and r.get("id")]
+        new_id = (max(existing_ids) + 1) if existing_ids else 1
+
+        now_iso = datetime.now().isoformat()
+        new_crm = {
+            "id": new_id,
+            "기관생성일": _clean_str(crm.기관생성일),
+            "성함": _clean_str(crm.성함),
+            "이메일": _clean_str(crm.이메일),
+            "카드미등록발송일자": _clean_str(crm.카드미등록발송일자),
+            "카드등록일": _clean_str(crm.카드등록일),
+            "크레딧충전일": _clean_str(crm.크레딧충전일),
+            "기관링크": _clean_str(crm.기관링크),
+            "기관어드민링크": _clean_str(crm.기관어드민링크),
+            "등록일": now_iso,
+            "업데이트날짜": now_iso,
+        }
+
+        rows.append(new_crm)
+        save_json_db(rows, CRM_DB_PATH)
+        return new_crm
+
+
+@app.put("/api/crm-customers/{crm_id}", response_model=CrmCustomer)
+async def update_crm_customer(crm_id: int, crm: CrmCustomerCreate):
+    """CRM 고객(기관) 정보 수정"""
+    if not crm.성함 or not crm.이메일:
+        raise HTTPException(status_code=400, detail="성함과 이메일은 필수 입력 항목입니다.")
+
+    with file_lock(CRM_DB_PATH):
+        rows = load_json_db(CRM_DB_PATH)
+        if not isinstance(rows, list):
+            rows = []
+
+        target_index = -1
+        for idx, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+            rid = row.get("id")
+            rid_val = rid
+            if isinstance(rid, str) and rid.isdigit():
+                rid_val = int(rid)
+            if rid_val == crm_id:
+                row["id"] = int(rid)
+                target_index = idx
+                break
+
+        if target_index < 0:
+            raise HTTPException(status_code=404, detail="CRM 고객을 찾을 수 없습니다.")
+
+        existing = rows[target_index] if isinstance(rows[target_index], dict) else {}
+        now_iso = datetime.now().isoformat()
+
+        rows[target_index] = {
+            **existing,
+            **{
+                "id": crm_id,
+                "기관생성일": _clean_str(crm.기관생성일),
+                "성함": _clean_str(crm.성함),
+                "이메일": _clean_str(crm.이메일),
+                "카드미등록발송일자": _clean_str(crm.카드미등록발송일자),
+                "카드등록일": _clean_str(crm.카드등록일),
+                "크레딧충전일": _clean_str(crm.크레딧충전일),
+                "기관링크": _clean_str(crm.기관링크),
+                "기관어드민링크": _clean_str(crm.기관어드민링크),
+                "업데이트날짜": now_iso,
+            },
+        }
+
+        if not rows[target_index].get("등록일"):
+            rows[target_index]["등록일"] = now_iso
+
+        save_json_db(rows, CRM_DB_PATH)
+        return rows[target_index]
+
+
+@app.delete("/api/crm-customers/{crm_id}")
+async def delete_crm_customer(crm_id: int):
+    """CRM 고객(기관) 삭제"""
+    with file_lock(CRM_DB_PATH):
+        rows = load_json_db(CRM_DB_PATH)
+        if not isinstance(rows, list):
+            rows = []
+
+        kept_rows = []
+        removed = False
+        for row in rows:
+            if not isinstance(row, dict):
+                kept_rows.append(row)
+                continue
+
+            rid = row.get("id")
+            rid_val = rid
+            if isinstance(rid, str) and rid.isdigit():
+                rid_val = int(rid)
+
+            if rid_val == crm_id:
+                removed = True
+                continue
+            kept_rows.append(row)
+
+        if not removed:
+            raise HTTPException(status_code=404, detail="CRM 고객을 찾을 수 없습니다.")
+
+        save_json_db(kept_rows, CRM_DB_PATH)
+        return {"ok": True}
+
+
+@app.post("/api/crm-customers/upload-csv")
+async def upload_crm_customers_csv(file: UploadFile = File(...)):
+    """CSV 파일로 CRM 고객 일괄 등록"""
+    try:
+        # CSV 파일 읽기
+        contents = await file.read()
+        
+        # 인코딩 시도 (utf-8-sig, utf-8, cp949 순서)
+        csv_text = None
+        for encoding in ['utf-8-sig', 'utf-8', 'cp949']:
+            try:
+                csv_text = contents.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        
+        if csv_text is None:
+            raise HTTPException(status_code=400, detail="CSV 파일 인코딩을 인식할 수 없습니다. UTF-8 또는 CP949 형식으로 저장해주세요.")
+        
+        # pandas로 CSV 파싱
+        df = pd.read_csv(io.StringIO(csv_text))
+        
+        # 필수 컬럼 확인
+        required_cols = ['성함', '이메일']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"필수 컬럼이 없습니다: {', '.join(missing_cols)}"
+            )
+        
+        # 데이터 정리 및 검증
+        rows = []
+        errors = []
+        
+        for idx, row in df.iterrows():
+            try:
+                # 필수 필드 검증
+                성함 = _clean_str(row.get('성함', ''))
+                이메일 = _clean_str(row.get('이메일', ''))
+                
+                if not 성함 or not 이메일:
+                    errors.append(f"행 {idx + 2}: 성함과 이메일은 필수 입력 항목입니다.")
+                    continue
+                
+                # 날짜 필드 정리 (NaN이면 빈 문자열)
+                기관생성일 = _clean_str(row.get('기관생성일', ''))
+                카드미등록발송일자 = _clean_str(row.get('카드미등록발송일자', ''))
+                카드등록일 = _clean_str(row.get('카드등록일', ''))
+                크레딧충전일 = _clean_str(row.get('크레딧충전일', ''))
+                
+                rows.append({
+                    "기관생성일": 기관생성일,
+                    "성함": 성함,
+                    "이메일": 이메일,
+                    "카드미등록발송일자": 카드미등록발송일자,
+                    "카드등록일": 카드등록일,
+                    "크레딧충전일": 크레딧충전일,
+                    "기관링크": _clean_str(row.get('기관링크', '')),
+                    "기관어드민링크": _clean_str(row.get('기관어드민링크', '')),
+                })
+            except Exception as e:
+                errors.append(f"행 {idx + 2}: 처리 중 오류 - {str(e)}")
+                continue
+        
+        if not rows:
+            raise HTTPException(
+                status_code=400,
+                detail="업로드할 유효한 데이터가 없습니다. " + ("\n".join(errors[:5]) if errors else "")
+            )
+        
+        # 일괄 저장
+        with file_lock(CRM_DB_PATH):
+            existing_rows = load_json_db(CRM_DB_PATH)
+            if not isinstance(existing_rows, list):
+                existing_rows = []
+            
+            existing_ids = [r.get("id") for r in existing_rows if isinstance(r, dict) and r.get("id")]
+            next_id = (max(existing_ids) + 1) if existing_ids else 1
+            
+            now_iso = datetime.now().isoformat()
+            new_rows = []
+            
+            for row_data in rows:
+                new_crm = {
+                    "id": next_id,
+                    "기관생성일": row_data["기관생성일"],
+                    "성함": row_data["성함"],
+                    "이메일": row_data["이메일"],
+                    "카드미등록발송일자": row_data["카드미등록발송일자"],
+                    "카드등록일": row_data["카드등록일"],
+                    "크레딧충전일": row_data["크레딧충전일"],
+                    "기관링크": row_data["기관링크"],
+                    "기관어드민링크": row_data["기관어드민링크"],
+                    "등록일": now_iso,
+                    "업데이트날짜": now_iso,
+                }
+                new_rows.append(new_crm)
+                next_id += 1
+            
+            existing_rows.extend(new_rows)
+            save_json_db(existing_rows, CRM_DB_PATH)
+        
+        result = {
+            "success": True,
+            "uploaded": len(new_rows),
+            "errors": errors[:10] if errors else []  # 최대 10개 에러만 반환
+        }
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"CSV 업로드 실패: {str(e)}")
