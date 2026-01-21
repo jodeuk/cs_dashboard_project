@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { fetchUserchats, checkApiHealth, refreshCache, fetchCloudCustomers, createCloudCustomer, updateCloudCustomer, deleteCloudCustomer, fetchRefundCustomers, createRefundCustomer, updateRefundCustomer, deleteRefundCustomer, fetchManagerStats, fetchCrmCustomers, createCrmCustomer, updateCrmCustomer, deleteCrmCustomer } from "./api";
+import { fetchUserchats, checkApiHealth, refreshCache, fetchCloudCustomers, createCloudCustomer, updateCloudCustomer, deleteCloudCustomer, fetchRefundCustomers, createRefundCustomer, updateRefundCustomer, deleteRefundCustomer, fetchManagerStats, fetchCrmCustomers, createCrmCustomer, updateCrmCustomer, deleteCrmCustomer, uploadCrmCustomersCSV, apiCall } from "./api";
 import FilterPanel from "./components/FilterPanel";
 import ChartSection from "./components/ChartSection";
 import MultiLineChartSection from "./components/MultiLineChartSection";
@@ -8,10 +8,11 @@ import SLAStackBar from "./components/SLAStackBar";
 // 박스플롯/비즈웜 대신 분포 커브 차트
 import HandlingLeadtimeDensity from "./components/HandlingLeadtimeDensity";
 import DayOfWeekTimeDistributionChart from "./components/DayOfWeekTimeDistributionChart";
+import MultiSelectDropdown from "./components/MultiSelectDropdown";
 import CloudCrmChartsSection from "./components/CloudCrmChartsSection";
 import CloudAmountSummaryCard from "./components/CloudAmountSummaryCard";
 import CloudTimelineChart from "./components/CloudTimelineChart";
-import { PieChart, Pie, Cell, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { PieChart, Pie, Cell, LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 const CSatChartSection = lazy(() => import("./components/CSatChartSection"));
 const CSatTypeChartSection = lazy(() => import("./components/CSatTypeChartSection"));
@@ -249,6 +250,18 @@ function App() {
 
   // 상태
   const [userchats, setUserchats] = useState([]);
+  const [tableDataCache, setTableDataCache] = useState([]); // 테이블용 전체 데이터 (필터 없음)
+  // ✅ 서비스유형/문의유형 테이블 필터
+  const [serviceInquiryTableFilters, setServiceInquiryTableFilters] = useState({
+    서비스유형: [],
+    문의유형: [],
+    문의유형_2차: [],
+  });
+  // ✅ 테이블 정렬 상태
+  const [tableSort, setTableSort] = useState({
+    column: "문의량", // "문의량", "평균응답시간", "총응답시간"
+    direction: "desc", // "asc" or "desc"
+  });
   // ✅ 복수선택 지원 (배열). 비선택 = [] = "전체"와 동일 의미
   const [filterVals, setFilterVals] = useState({
     고객유형: [],
@@ -260,9 +273,11 @@ function App() {
   });
 
   // 차트별로 독립 상태
-  const [csDateGroup, setCsDateGroup] = useState("월간");       // CS 문의량 차트용
-  const [mlDateGroup, setMlDateGroup] = useState("월간");       // 평균 응답/해결 시간 차트용
-  const [managerDateGroup, setManagerDateGroup] = useState("월간"); // 담당자별 문의량 차트용
+  const [csDateGroup, setCsDateGroup] = useState("Monthly");       // CS 문의량 차트용
+  const [mlDateGroup, setMlDateGroup] = useState("Monthly");       // 평균 응답/해결 시간 차트용
+  const [managerDateGroup, setManagerDateGroup] = useState("Monthly"); // 담당자별 문의량 차트용
+  const [inquiryTypeDateGroup, setInquiryTypeDateGroup] = useState("Monthly"); // 일자별 문의유형비율 차트용
+  const [channelDateGroup, setChannelDateGroup] = useState("Monthly"); // 일자별 채널비율 차트용
   const [start, setStart] = useState(oneMonthAgoStr);
   const [end, setEnd] = useState(todayStr);
   const [loading, setLoading] = useState(false);
@@ -283,10 +298,6 @@ function App() {
   const [tooltip, setTooltip] = useState({ visible: false, x: 0, y: 0, title: "", count: 0, percent: 0 });
   const [, setHoverIndex] = useState(null); // 값은 안 쓰므로 변수 생략
   const [direction, setDirection] = useState(["IB"]); // IB/OB 필터 (기본값: IB만)
-  
-  // 서비스유형/문의유형별 문의량 테이블 정렬 상태
-  const [serviceInquiryTableSortField, setServiceInquiryTableSortField] = useState("문의량");
-  const [serviceInquiryTableSortDirection, setServiceInquiryTableSortDirection] = useState("desc");
 
   // Cloud 고객 데이터 상태
   const [cloudCustomers, setCloudCustomers] = useState([]);
@@ -301,17 +312,21 @@ function App() {
   });
   const [showResourceDetail, setShowResourceDetail] = useState(false); // 자원 상세보기 토글
   const [salesFunnelDateFilter, setSalesFunnelDateFilter] = useState("전체"); // 세일즈 퍼널 날짜 필터: 전체/오늘/1주/1개월
+  const [timelineViewMode, setTimelineViewMode] = useState("개월"); // 타임라인 뷰 모드: 오늘/주/개월/분기
   
   // 테이블 필터링 상태
   const [tableFilters, setTableFilters] = useState({
     사업유형: "전체",
     세일즈단계: "전체", 
-    사용유형: "전체"
+    사용유형: "전체",
+    담당자: "전체",
+    서비스유형: "전체"
   });
   const [tableSearch, setTableSearch] = useState("");
   const [tableSearchField, setTableSearchField] = useState("이름");
   const [cloudFormData, setCloudFormData] = useState({
     사업유형: "",
+    담당자: "",
     이름: "",
     기관: "",
     기관페이지링크: "",
@@ -415,7 +430,7 @@ function App() {
   }, []);
 
   const loadRefundCustomers = useCallback(async () => {
-    if (!apiConnected) return;
+    if (!apiConnected || apiConnected.ok !== true) return;
     try {
       const data = await fetchRefundCustomers();
       const rows = Array.isArray(data)
@@ -432,7 +447,7 @@ function App() {
   }, [apiConnected]);
 
   const loadCrmCustomers = useCallback(async () => {
-    if (!apiConnected) return;
+    if (!apiConnected || apiConnected.ok !== true) return;
     try {
       const data = await fetchCrmCustomers();
       const rows = Array.isArray(data)
@@ -572,6 +587,53 @@ function App() {
     },
     [loadCrmCustomers, crmEditingId, resetCrmForm]
   );
+
+  const handleCrmCsvUpload = useCallback(async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // CSV 파일인지 확인
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      alert("CSV 파일만 업로드 가능합니다.");
+      event.target.value = ''; // 파일 선택 초기화
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const result = await uploadCrmCustomersCSV(file);
+      
+      if (result.success) {
+        const uploadedCount = result.uploaded || 0;
+        const errorCount = result.errors?.length || 0;
+        
+        let message = `✅ ${uploadedCount}건의 CRM 데이터가 업로드되었습니다.`;
+        if (errorCount > 0) {
+          message += `\n⚠️ ${errorCount}건의 오류가 발생했습니다.`;
+          if (result.errors && result.errors.length > 0) {
+            message += '\n\n오류 내용:\n' + result.errors.slice(0, 5).join('\n');
+            if (result.errors.length > 5) {
+              message += `\n... 외 ${result.errors.length - 5}건`;
+            }
+          }
+        }
+        
+        alert(message);
+        await loadCrmCustomers();
+        setSuccess(`✅ ${uploadedCount}건 업로드 완료`);
+        setTimeout(() => setSuccess(null), 3000);
+      } else {
+        throw new Error("업로드 실패");
+      }
+    } catch (err) {
+      console.error("CSV 업로드 실패:", err);
+      const errorMessage = err?.response?.data?.detail || err?.message || "CSV 업로드에 실패했습니다.";
+      alert(`CSV 업로드 실패: ${errorMessage}`);
+    } finally {
+      setLoading(false);
+      event.target.value = ''; // 파일 선택 초기화
+    }
+  }, [loadCrmCustomers]);
 
   const handleCrmEdit = useCallback(
     (customer, index) => {
@@ -846,7 +908,7 @@ function App() {
   useEffect(() => {
     checkApiHealth()
       .then((res) => setApiConnected(res))   // res가 boolean이든 {ok:true}든 내부 구현에 맞춰 그대로 전달
-      .catch(() => setApiConnected(false));
+      .catch(() => setApiConnected({ ok: false }));
   }, []);
 
   // ✅ useEffect보다 위에 "함수 선언문"으로 둔다
@@ -900,19 +962,52 @@ function App() {
     }
   }, [start, end, filterVals]);
 
+
+  // 테이블용 전체 데이터 로드 (필터 없이, 한 번만) - 현재 존재하는 전체 캐시 데이터
+  // apiCall을 직접 사용하여 periodController와 독립적으로 실행 (다른 요청 취소 방지)
+  const loadTableData = useCallback(async () => {
+    if (!apiConnected || apiConnected.ok !== true) return;
+    try {
+      // 넓은 범위로 요청하되 refresh_mode: "cache"로 하면 백엔드에서 캐시에 있는 것만 반환
+      // 현재 존재하는 전체 캐시 데이터를 가져옴 (예: 4월~12월)
+      const params = {
+        start: "2020-01-01", // 넓은 시작 범위
+        end: "2099-12-31",   // 넓은 종료 범위
+        refresh_mode: "cache", // 캐시만 사용, API 호출 없음 - 존재하는 캐시만 반환
+        고객유형: "전체",
+        고객유형_2차: "전체",
+        문의유형: "전체",
+        문의유형_2차: "전체",
+        서비스유형: "전체",
+        서비스유형_2차: "전체"
+      };
+      // apiCall을 직접 사용하여 periodController와 독립적으로 실행
+      const resp = await apiCall("get", "/period-data", params);
+      const rows = Array.isArray(resp) ? resp : (Array.isArray(resp?.data) ? resp.data : []);
+      setTableDataCache(rows);
+    } catch (err) {
+      console.error("테이블 데이터 로드 실패:", err);
+    }
+  }, [apiConnected]);
+
   // 최초 연결 후, 현재 필터로 로드
   useEffect(() => {
-    if (apiConnected) {
+    if (apiConnected && apiConnected.ok === true) {
       fetchRowsWithParams("cache");
       loadCsatAnalysis();
       loadManagerStats();
+      // 테이블용 전체 데이터는 약간 지연시켜서 다른 요청과 충돌 방지
+      setTimeout(() => {
+        loadTableData();
+      }, 500);
     }
-  }, [apiConnected, start, end, filterVals, fetchRowsWithParams]);
+  }, [apiConnected, start, end, filterVals, fetchRowsWithParams, loadTableData]);
+
 
   // Cloud 고객 데이터 로드
   useEffect(() => {
     const loadCloudCustomers = async () => {
-      if (apiConnected && activeTab === "Cloud") {
+      if (apiConnected && apiConnected.ok === true && activeTab === "Cloud") {
         try {
           const data = await fetchCloudCustomers();
           // 백엔드에서 반환된 데이터 형식에 따라 처리
@@ -928,13 +1023,13 @@ function App() {
   }, [apiConnected, activeTab]);
 
   useEffect(() => {
-    if (apiConnected && activeTab === "Cloud") {
+    if (apiConnected && apiConnected.ok === true && activeTab === "Cloud") {
       loadRefundCustomers();
     }
   }, [apiConnected, activeTab, loadRefundCustomers]);
 
   useEffect(() => {
-    if (apiConnected && activeTab === "Cloud") {
+    if (apiConnected && apiConnected.ok === true && activeTab === "Cloud") {
       loadCrmCustomers();
     }
   }, [apiConnected, activeTab, loadCrmCustomers]);
@@ -1017,7 +1112,51 @@ function App() {
     startDate.setHours(0, 0, 0, 0);
     endDate.setHours(23, 59, 59, 999);
     
-    if (csDateGroup === "월간") {
+    if (csDateGroup === "Daily") {
+      // 일간 집계
+      const map = {};
+      filteredRows.forEach((item) => {
+        const d = parseTsKST(item.firstAskedAt || item.createdAt);
+        if (!d) return;
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        if (!map[key]) {
+          map[key] = {
+            x축: `${d.getMonth() + 1}/${d.getDate()}`,
+            문의량: 0,
+            year: d.getFullYear(),
+            month: d.getMonth() + 1,
+            date: d.getDate()
+          };
+        }
+        map[key].문의량 += 1;
+      });
+      
+      // start부터 end까지 모든 일 생성
+      const allDays = [];
+      const current = new Date(startDate);
+      while (current <= endDate) {
+        const year = current.getFullYear();
+        const month = current.getMonth() + 1;
+        const date = current.getDate();
+        const key = `${year}-${String(month).padStart(2, "0")}-${String(date).padStart(2, "0")}`;
+        allDays.push({
+          key,
+          x축: `${month}/${date}`,
+          문의량: map[key]?.문의량 || 0,
+          year,
+          month,
+          date
+        });
+        // 다음 날로 이동
+        current.setDate(current.getDate() + 1);
+      }
+      
+      const data = allDays.map(item => ({
+        label: item.x축,
+        value: item.문의량
+      }));
+      return data;
+    } else if (csDateGroup === "Monthly") {
       // filteredRows가 비어있어도 start부터 end까지 모든 월 생성
       const map = {};
       filteredRows.forEach((item) => {
@@ -1063,8 +1202,11 @@ function App() {
       filteredRows.forEach((item) => {
         const d = parseTsKST(item.firstAskedAt);
         if (!d) return;
+        // 월요일 기준으로 주 시작일 계산
         const weekStart = new Date(d);
-        weekStart.setDate(d.getDate() - d.getDay()); // 일요일 시작
+        const day = weekStart.getDay(); // 0(일)~6(토)
+        const diffToMon = (day + 6) % 7; // 월요일까지의 차이 (월=0, 화=1, ..., 일=6)
+        weekStart.setDate(d.getDate() - diffToMon);
         weekStart.setHours(0, 0, 0, 0);
         const weekKey = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, "0")}-${String(
           weekStart.getDate()
@@ -1072,7 +1214,7 @@ function App() {
         if (!map[weekKey]) {
           const isFirstWeekOfMonth = weekStart.getDate() <= 7;
           map[weekKey] = {
-            x축: `${weekStart.getMonth() + 1}/${weekStart.getDate()}`,
+            x축: `WB${weekStart.getMonth() + 1}/${weekStart.getDate()}`,
             문의량: 0,
             월레이블: isFirstWeekOfMonth ? `${weekStart.getMonth() + 1}월` : null,
             month: weekStart.getMonth() + 1,
@@ -1082,12 +1224,13 @@ function App() {
         map[weekKey].문의량 += 1;
       });
       
-      // start부터 end까지 모든 주 생성
+      // start부터 end까지 모든 주 생성 (월요일 기준)
       const allWeeks = [];
       const current = new Date(startDate);
-      // 시작일이 속한 주의 일요일로 이동
-      const startDay = current.getDay();
-      current.setDate(current.getDate() - startDay);
+      // 시작일이 속한 주의 월요일로 이동
+      const startDay = current.getDay(); // 0(일)~6(토)
+      const diffToMon = (startDay + 6) % 7; // 월요일까지의 차이
+      current.setDate(current.getDate() - diffToMon);
       current.setHours(0, 0, 0, 0);
       
       while (current <= endDate) {
@@ -1099,7 +1242,7 @@ function App() {
         
         allWeeks.push({
           key: weekKey,
-          x축: `${current.getMonth() + 1}/${current.getDate()}`,
+          x축: `WB${current.getMonth() + 1}/${current.getDate()}`,
           문의량: existing?.문의량 || 0,
           월레이블: isFirstWeekOfMonth ? `${current.getMonth() + 1}월` : null,
           month: current.getMonth() + 1,
@@ -1110,6 +1253,8 @@ function App() {
         current.setDate(current.getDate() + 7);
       }
 
+      // 11주 이상이면 WB 접두사 제거
+      const shouldRemoveWB = allWeeks.length >= 11;
       const data = allWeeks.map((item, index) => {
         let 월레이블 = item.월레이블;
         if (!월레이블 && index > 0) {
@@ -1119,7 +1264,11 @@ function App() {
           }
         }
         if (index === 0 && !월레이블) 월레이블 = `${item.month}월`;
-        return { label: item.x축, value: item.문의량, 월레이블 };
+        let label = item.x축;
+        if (shouldRemoveWB && label.startsWith('WB')) {
+          label = label.substring(2); // 'WB' 제거
+        }
+        return { label, value: item.문의량, 월레이블 };
       });
       return data;
     }
@@ -1140,13 +1289,55 @@ function App() {
     
     const result = {};
     
-    selectedServiceTypes.forEach(serviceType => {
+      selectedServiceTypes.forEach(serviceType => {
       const serviceRows = filteredRows.filter(row => {
         const tags = pickTagsFromRow(row);
         return tags.서비스유형 === serviceType;
       });
       
-      if (csDateGroup === "월간") {
+      if (csDateGroup === "Daily") {
+        // 일간 집계
+        const map = {};
+        serviceRows.forEach((item) => {
+          const d = parseTsKST(item.firstAskedAt || item.createdAt);
+          if (!d) return;
+          const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+          if (!map[key]) {
+            map[key] = {
+              x축: `${d.getMonth() + 1}/${d.getDate()}`,
+              문의량: 0,
+              year: d.getFullYear(),
+              month: d.getMonth() + 1,
+              date: d.getDate()
+            };
+          }
+          map[key].문의량 += 1;
+        });
+        
+        // start부터 end까지 모든 일 생성
+        const allDays = [];
+        const current = new Date(startDate);
+        while (current <= endDate) {
+          const year = current.getFullYear();
+          const month = current.getMonth() + 1;
+          const date = current.getDate();
+          const key = `${year}-${String(month).padStart(2, "0")}-${String(date).padStart(2, "0")}`;
+          allDays.push({
+            key,
+            x축: `${month}/${date}`,
+            문의량: map[key]?.문의량 || 0,
+            year,
+            month,
+            date
+          });
+          current.setDate(current.getDate() + 1);
+        }
+        
+        result[serviceType] = allDays.map(item => ({
+          label: item.x축,
+          value: item.문의량
+        }));
+      } else if (csDateGroup === "Monthly") {
         const map = {};
         serviceRows.forEach((item) => {
           const d = parseTsKST(item.firstAskedAt);
@@ -1189,8 +1380,11 @@ function App() {
         serviceRows.forEach((item) => {
           const d = parseTsKST(item.firstAskedAt);
           if (!d) return;
+          // 월요일 기준으로 주 시작일 계산
           const weekStart = new Date(d);
-          weekStart.setDate(d.getDate() - d.getDay());
+          const day = weekStart.getDay(); // 0(일)~6(토)
+          const diffToMon = (day + 6) % 7; // 월요일까지의 차이
+          weekStart.setDate(d.getDate() - diffToMon);
           weekStart.setHours(0, 0, 0, 0);
           const weekKey = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, "0")}-${String(
             weekStart.getDate()
@@ -1198,7 +1392,7 @@ function App() {
           if (!map[weekKey]) {
             const isFirstWeekOfMonth = weekStart.getDate() <= 7;
             map[weekKey] = {
-              x축: `${weekStart.getMonth() + 1}/${weekStart.getDate()}`,
+              x축: `WB${weekStart.getMonth() + 1}/${weekStart.getDate()}`,
               문의량: 0,
               월레이블: isFirstWeekOfMonth ? `${weekStart.getMonth() + 1}월` : null,
               month: weekStart.getMonth() + 1,
@@ -1208,11 +1402,12 @@ function App() {
           map[weekKey].문의량 += 1;
         });
         
-        // start부터 end까지 모든 주 생성
+        // start부터 end까지 모든 주 생성 (월요일 기준)
         const allWeeks = [];
         const current = new Date(startDate);
-        const startDay = current.getDay();
-        current.setDate(current.getDate() - startDay);
+        const startDay = current.getDay(); // 0(일)~6(토)
+        const diffToMon = (startDay + 6) % 7; // 월요일까지의 차이
+        current.setDate(current.getDate() - diffToMon);
         current.setHours(0, 0, 0, 0);
         
         while (current <= endDate) {
@@ -1224,7 +1419,7 @@ function App() {
           
           allWeeks.push({
             key: weekKey,
-            x축: `${current.getMonth() + 1}/${current.getDate()}`,
+            x축: `WB${current.getMonth() + 1}/${current.getDate()}`,
             문의량: existing?.문의량 || 0,
             월레이블: isFirstWeekOfMonth ? `${current.getMonth() + 1}월` : null,
             month: current.getMonth() + 1,
@@ -1234,6 +1429,8 @@ function App() {
           current.setDate(current.getDate() + 7);
         }
 
+        // 11주 이상이면 WB 접두사 제거
+        const shouldRemoveWB = allWeeks.length >= 11;
         result[serviceType] = allWeeks.map((item, index) => {
           let 월레이블 = item.월레이블;
           if (!월레이블 && index > 0) {
@@ -1243,7 +1440,11 @@ function App() {
             }
           }
           if (index === 0 && !월레이블) 월레이블 = `${item.month}월`;
-          return { label: item.x축, value: item.문의량, 월레이블 };
+          let label = item.x축;
+          if (shouldRemoveWB && label.startsWith('WB')) {
+            label = label.substring(2); // 'WB' 제거
+          }
+          return { label, value: item.문의량, 월레이블 };
         });
       }
     });
@@ -1251,7 +1452,55 @@ function App() {
     return result;
   }, [filteredRows, csDateGroup, start, end, filterVals.서비스유형]);
 
-  // ✅ 평균 응답/해결 시간 차트: 주간/월간 각각 집계
+  // ✅ 평균 응답/해결 시간 차트: Daily/Weekly/Monthly 각각 집계
+  const avgTimeDaily = useMemo(() => {
+    if (filteredRows.length === 0) return [];
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    startDate.setHours(0, 0, 0, 0);
+    endDate.setHours(23, 59, 59, 999);
+    
+    const map = {};
+    for (const item of filteredRows) {
+      const d = parseTsKST(item.firstAskedAt);
+      if (!d) continue;
+      const dayKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      if (!map[dayKey]) {
+        map[dayKey] = {
+          x축: `${d.getMonth()+1}/${d.getDate()}`,
+          operationWaitingTime: [], operationAvgReplyTime: [],
+          operationTotalReplyTime: [], operationResolutionTime: []
+        };
+      }
+      const pushIf = (arr, v) => { const n = timeToSec(v); if (n > 0) arr.push(n); };
+      pushIf(map[dayKey].operationWaitingTime, item.operationWaitingTime);
+      pushIf(map[dayKey].operationAvgReplyTime, item.operationAvgReplyTime);
+      pushIf(map[dayKey].operationTotalReplyTime, item.operationTotalReplyTime);
+      pushIf(map[dayKey].operationResolutionTime, item.operationResolutionTime);
+    }
+    
+    // start부터 end까지 모든 일 생성
+    const allDays = [];
+    const current = new Date(startDate);
+    while (current <= endDate) {
+      const year = current.getFullYear();
+      const month = current.getMonth() + 1;
+      const date = current.getDate();
+      const dayKey = `${year}-${String(month).padStart(2, "0")}-${String(date).padStart(2, "0")}`;
+      const existing = map[dayKey];
+      allDays.push({
+        x축: `${month}/${date}`,
+        operationWaitingTime: existing ? (avg(existing.operationWaitingTime) || null) : null,
+        operationAvgReplyTime: existing ? (avg(existing.operationAvgReplyTime) || null) : null,
+        operationTotalReplyTime: existing ? (avg(existing.operationTotalReplyTime) || null) : null,
+        operationResolutionTime: existing ? (avg(existing.operationResolutionTime) || null) : null,
+      });
+      current.setDate(current.getDate() + 1);
+    }
+    
+    return allDays;
+  }, [filteredRows, start, end]);
+
   const avgTimeMonthly = useMemo(() => {
     if (filteredRows.length === 0) return [];
     const map = {};
@@ -1315,23 +1564,29 @@ function App() {
     const mmdd = (d) => `${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getDate()).padStart(2,"0")}`;
     const filterStartDate = new Date(start); // 사용자가 선택한 시작 날짜
     
-    const rows = Array.from(map.values())
+    const filteredWeekRows = Array.from(map.values())
       .filter(b => b.__wStart >= filterStartDate) // 시작 날짜 이전의 주 제외
-      .sort((a,b) => a.__wStart - b.__wStart)
-      .map(b => {
-        const wEnd = new Date(b.__wStart); wEnd.setDate(wEnd.getDate()+6);
-        return {
-          x축: `${mmdd(b.__wStart)}~${mmdd(wEnd)}`,
-          주레이블: `${mmdd(b.__wStart)}~${mmdd(wEnd)}`,
-          주보조레이블: "",  // 월 경계 표시용
-          월레이블: `${b.__wStart.getMonth() + 1}월`, // 월 레이블 추가
-          operationWaitingTime: (avg(b.operationWaitingTime) || null),
-          operationAvgReplyTime: (avg(b.operationAvgReplyTime) || null),
-          operationTotalReplyTime: (avg(b.operationTotalReplyTime) || null),
-          operationResolutionTime: (avg(b.operationResolutionTime) || null),
-          __wStart: b.__wStart
-        };
-      });
+      .sort((a,b) => a.__wStart - b.__wStart);
+    
+    // 11주 이상이면 WB 접두사 제거
+    const shouldRemoveWB = filteredWeekRows.length >= 11;
+    
+    const rows = filteredWeekRows.map(b => {
+      const wEnd = new Date(b.__wStart); wEnd.setDate(wEnd.getDate()+6);
+      const x축Base = `${b.__wStart.getMonth() + 1}/${b.__wStart.getDate()}`;
+      const x축 = shouldRemoveWB ? x축Base : `WB${x축Base}`;
+      return {
+        x축,
+        주레이블: x축,
+        주보조레이블: "",  // 월 경계 표시용
+        월레이블: `${b.__wStart.getMonth() + 1}월`, // 월 레이블 추가
+        operationWaitingTime: (avg(b.operationWaitingTime) || null),
+        operationAvgReplyTime: (avg(b.operationAvgReplyTime) || null),
+        operationTotalReplyTime: (avg(b.operationTotalReplyTime) || null),
+        operationResolutionTime: (avg(b.operationResolutionTime) || null),
+        __wStart: b.__wStart
+      };
+    });
     // 월 경계 라벨
     let prev = "";
     rows.forEach(r => {
@@ -1342,6 +1597,356 @@ function App() {
     });
     return rows;
   }, [filteredRows, start]);
+
+  // ✅ 일자별 문의유형비율 데이터 (면적 차트용)
+  const inquiryTypeByDateData = useMemo(() => {
+    if (filteredRows.length === 0) return [];
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    startDate.setHours(0, 0, 0, 0);
+    endDate.setHours(23, 59, 59, 999);
+
+    if (inquiryTypeDateGroup === "Daily") {
+      // 일자별로 문의유형별 집계
+      const dateMap = {};
+      
+      filteredRows.forEach((item) => {
+        const d = parseTsKST(item.firstAskedAt || item.createdAt);
+        if (!d) return;
+        const dayKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        
+        if (!dateMap[dayKey]) {
+          dateMap[dayKey] = {
+            x축: `${d.getMonth()+1}/${d.getDate()}`,
+            date: dayKey,
+          };
+        }
+        
+        // 문의유형 추출 (1차만 사용)
+        let inquiryType = item.문의유형 || "";
+        if (inquiryType && inquiryType.includes("/")) {
+          inquiryType = inquiryType.split("/")[0].trim();
+        }
+        if (!inquiryType || inquiryType.trim() === "") {
+          inquiryType = "기타";
+        }
+        
+        if (!dateMap[dayKey][inquiryType]) {
+          dateMap[dayKey][inquiryType] = 0;
+        }
+        dateMap[dayKey][inquiryType] += 1;
+      });
+
+      // start부터 end까지 모든 일 생성
+      const allDays = [];
+      const current = new Date(startDate);
+      while (current <= endDate) {
+        const year = current.getFullYear();
+        const month = current.getMonth() + 1;
+        const date = current.getDate();
+        const dayKey = `${year}-${String(month).padStart(2, "0")}-${String(date).padStart(2, "0")}`;
+        const existing = dateMap[dayKey] || { x축: `${month}/${date}`, date: dayKey };
+        allDays.push(existing);
+        current.setDate(current.getDate() + 1);
+      }
+
+      return allDays;
+    } else if (inquiryTypeDateGroup === "Monthly") {
+      // 월별로 문의유형별 집계
+      const dateMap = {};
+      
+      filteredRows.forEach((item) => {
+        const d = parseTsKST(item.firstAskedAt || item.createdAt);
+        if (!d) return;
+        const monthKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2, "0")}`;
+        
+        if (!dateMap[monthKey]) {
+          dateMap[monthKey] = {
+            x축: `${d.getMonth()+1}월`,
+          };
+        }
+        
+        // 문의유형 추출 (1차만 사용)
+        let inquiryType = item.문의유형 || "";
+        if (inquiryType && inquiryType.includes("/")) {
+          inquiryType = inquiryType.split("/")[0].trim();
+        }
+        if (!inquiryType || inquiryType.trim() === "") {
+          inquiryType = "기타";
+        }
+        
+        if (!dateMap[monthKey][inquiryType]) {
+          dateMap[monthKey][inquiryType] = 0;
+        }
+        dateMap[monthKey][inquiryType] += 1;
+      });
+
+      // start부터 end까지 모든 월 생성
+      const allMonths = [];
+      const current = new Date(startDate);
+      while (current <= endDate) {
+        const year = current.getFullYear();
+        const month = current.getMonth() + 1;
+        const monthKey = `${year}-${String(month).padStart(2, "0")}`;
+        const existing = dateMap[monthKey] || { x축: `${month}월` };
+        allMonths.push(existing);
+        current.setMonth(current.getMonth() + 1);
+        current.setDate(1);
+      }
+
+      return allMonths;
+    } else {
+      // 주별로 문의유형별 집계 (Weekly)
+      const dateMap = {};
+      
+      filteredRows.forEach((item) => {
+        const d = parseTsKST(item.firstAskedAt || item.createdAt);
+        if (!d) return;
+        // 월요일 기준으로 주 시작일 계산
+        const weekStart = new Date(d);
+        const day = weekStart.getDay(); // 0(일)~6(토)
+        const diffToMon = (day + 6) % 7; // 월요일까지의 차이
+        weekStart.setDate(d.getDate() - diffToMon);
+        weekStart.setHours(0, 0, 0, 0);
+        const weekKey = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, "0")}-${String(weekStart.getDate()).padStart(2, "0")}`;
+        
+        if (!dateMap[weekKey]) {
+          dateMap[weekKey] = {
+            x축: `WB${weekStart.getMonth() + 1}/${weekStart.getDate()}`,
+          };
+        }
+        
+        // 문의유형 추출 (1차만 사용)
+        let inquiryType = item.문의유형 || "";
+        if (inquiryType && inquiryType.includes("/")) {
+          inquiryType = inquiryType.split("/")[0].trim();
+        }
+        if (!inquiryType || inquiryType.trim() === "") {
+          inquiryType = "기타";
+        }
+        
+        if (!dateMap[weekKey][inquiryType]) {
+          dateMap[weekKey][inquiryType] = 0;
+        }
+        dateMap[weekKey][inquiryType] += 1;
+      });
+
+      // start부터 end까지 모든 주 생성 (월요일 기준)
+      const allWeeks = [];
+      const current = new Date(startDate);
+      const startDay = current.getDay();
+      const diffToMon = (startDay + 6) % 7;
+      current.setDate(current.getDate() - diffToMon);
+      current.setHours(0, 0, 0, 0);
+      
+      while (current <= endDate) {
+        const weekKey = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, "0")}-${String(current.getDate()).padStart(2, "0")}`;
+        const existing = dateMap[weekKey] || { x축: `WB${current.getMonth() + 1}/${current.getDate()}` };
+        allWeeks.push(existing);
+        current.setDate(current.getDate() + 7);
+      }
+
+      // 11주 이상이면 WB 접두사 제거
+      const shouldRemoveWB = allWeeks.length >= 11;
+      return allWeeks.map(item => {
+        let label = item.x축;
+        if (shouldRemoveWB && label.startsWith('WB')) {
+          label = label.substring(2);
+        }
+        return { ...item, x축: label };
+      });
+    }
+  }, [filteredRows, start, end, inquiryTypeDateGroup]);
+
+  // ✅ 일자별 채널비율 데이터 (면적 차트용)
+  const channelByDateData = useMemo(() => {
+    if (filteredRows.length === 0) return [];
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    startDate.setHours(0, 0, 0, 0);
+    endDate.setHours(23, 59, 59, 999);
+
+    if (channelDateGroup === "Daily") {
+      // 일자별로 채널별 집계
+      const dateMap = {};
+      
+      filteredRows.forEach((item) => {
+        const d = parseTsKST(item.firstAskedAt || item.createdAt);
+        if (!d) return;
+        const dayKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        
+        if (!dateMap[dayKey]) {
+          dateMap[dayKey] = {
+            x축: `${d.getMonth()+1}/${d.getDate()}`,
+            date: dayKey,
+          };
+        }
+        
+        // mediumType 기반 채널 분류 (mediumName이 없을 수 있으므로 mediumType 사용)
+        const mediumType = item.mediumType || null;
+        const mediumName = item.mediumName || null;
+        let channel = "채널톡"; // 기본값
+        
+        // mediumType 우선 분류
+        if (mediumType === "phone") {
+          channel = "유선";
+        } else if (mediumType === "email") {
+          channel = "이메일";
+        } else if (mediumType === "app") {
+          // mediumType이 "app"이면 카카오
+          channel = "카카오";
+        } else if (mediumName === "appKakao") {
+          // mediumType이 위의 값이 아니고 mediumName이 "appKakao"면 카카오
+          channel = "카카오";
+        }
+        // 그 외는 "채널톡"
+        
+        if (!dateMap[dayKey][channel]) {
+          dateMap[dayKey][channel] = 0;
+        }
+        dateMap[dayKey][channel] += 1;
+      });
+
+      // start부터 end까지 모든 일 생성
+      const allDays = [];
+      const current = new Date(startDate);
+      while (current <= endDate) {
+        const year = current.getFullYear();
+        const month = current.getMonth() + 1;
+        const date = current.getDate();
+        const dayKey = `${year}-${String(month).padStart(2, "0")}-${String(date).padStart(2, "0")}`;
+        const existing = dateMap[dayKey] || { x축: `${month}/${date}`, date: dayKey };
+        allDays.push(existing);
+        current.setDate(current.getDate() + 1);
+      }
+
+      return allDays;
+    } else if (channelDateGroup === "Monthly") {
+      // 월별로 채널별 집계
+      const dateMap = {};
+      
+      filteredRows.forEach((item) => {
+        const d = parseTsKST(item.firstAskedAt || item.createdAt);
+        if (!d) return;
+        const monthKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2, "0")}`;
+        
+        if (!dateMap[monthKey]) {
+          dateMap[monthKey] = {
+            x축: `${d.getMonth()+1}월`,
+          };
+        }
+        
+        // mediumType 기반 채널 분류 (mediumName이 없을 수 있으므로 mediumType 사용)
+        const mediumType = item.mediumType || null;
+        const mediumName = item.mediumName || null;
+        let channel = "채널톡"; // 기본값
+        
+        // mediumType 우선 분류
+        if (mediumType === "phone") {
+          channel = "유선";
+        } else if (mediumType === "email") {
+          channel = "이메일";
+        } else if (mediumType === "app") {
+          // mediumType이 "app"이면 카카오
+          channel = "카카오";
+        } else if (mediumName === "appKakao") {
+          // mediumType이 위의 값이 아니고 mediumName이 "appKakao"면 카카오
+          channel = "카카오";
+        }
+        // 그 외는 "채널톡"
+        
+        if (!dateMap[monthKey][channel]) {
+          dateMap[monthKey][channel] = 0;
+        }
+        dateMap[monthKey][channel] += 1;
+      });
+
+      // start부터 end까지 모든 월 생성
+      const allMonths = [];
+      const current = new Date(startDate);
+      while (current <= endDate) {
+        const year = current.getFullYear();
+        const month = current.getMonth() + 1;
+        const monthKey = `${year}-${String(month).padStart(2, "0")}`;
+        const existing = dateMap[monthKey] || { x축: `${month}월` };
+        allMonths.push(existing);
+        current.setMonth(current.getMonth() + 1);
+        current.setDate(1);
+      }
+
+      return allMonths;
+    } else {
+      // 주별로 채널별 집계 (Weekly)
+      const dateMap = {};
+      
+      filteredRows.forEach((item) => {
+        const d = parseTsKST(item.firstAskedAt || item.createdAt);
+        if (!d) return;
+        // 월요일 기준으로 주 시작일 계산
+        const weekStart = new Date(d);
+        const day = weekStart.getDay(); // 0(일)~6(토)
+        const diffToMon = (day + 6) % 7; // 월요일까지의 차이
+        weekStart.setDate(d.getDate() - diffToMon);
+        weekStart.setHours(0, 0, 0, 0);
+        const weekKey = `${weekStart.getFullYear()}-${String(weekStart.getMonth() + 1).padStart(2, "0")}-${String(weekStart.getDate()).padStart(2, "0")}`;
+        
+        if (!dateMap[weekKey]) {
+          dateMap[weekKey] = {
+            x축: `WB${weekStart.getMonth() + 1}/${weekStart.getDate()}`,
+          };
+        }
+        
+        // mediumType 기반 채널 분류 (mediumName이 없을 수 있으므로 mediumType 사용)
+        const mediumType = item.mediumType || null;
+        const mediumName = item.mediumName || null;
+        let channel = "채널톡"; // 기본값
+        
+        // mediumType 우선 분류
+        if (mediumType === "phone") {
+          channel = "유선";
+        } else if (mediumType === "email") {
+          channel = "이메일";
+        } else if (mediumType === "app") {
+          // mediumType이 "app"이면 카카오
+          channel = "카카오";
+        } else if (mediumName === "appKakao") {
+          // mediumType이 위의 값이 아니고 mediumName이 "appKakao"면 카카오
+          channel = "카카오";
+        }
+        // 그 외는 "채널톡"
+        
+        if (!dateMap[weekKey][channel]) {
+          dateMap[weekKey][channel] = 0;
+        }
+        dateMap[weekKey][channel] += 1;
+      });
+
+      // start부터 end까지 모든 주 생성 (월요일 기준)
+      const allWeeks = [];
+      const current = new Date(startDate);
+      const startDay = current.getDay();
+      const diffToMon = (startDay + 6) % 7;
+      current.setDate(current.getDate() - diffToMon);
+      current.setHours(0, 0, 0, 0);
+      
+      while (current <= endDate) {
+        const weekKey = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, "0")}-${String(current.getDate()).padStart(2, "0")}`;
+        const existing = dateMap[weekKey] || { x축: `WB${current.getMonth() + 1}/${current.getDate()}` };
+        allWeeks.push(existing);
+        current.setDate(current.getDate() + 7);
+      }
+
+      // 11주 이상이면 WB 접두사 제거
+      const shouldRemoveWB = allWeeks.length >= 11;
+      return allWeeks.map(item => {
+        let label = item.x축;
+        if (shouldRemoveWB && label.startsWith('WB')) {
+          label = label.substring(2);
+        }
+        return { ...item, x축: label };
+      });
+    }
+  }, [filteredRows, start, end, channelDateGroup]);
 
   // ✅ 담당자별 기간별 문의량 집계 (멀티라인 차트용)
   // 주의: direction 필터를 무시하고 모든 데이터 사용 (담당자별 통계는 전체 데이터 필요)
@@ -1484,7 +2089,7 @@ function App() {
 
     const managers = ["조용준", "우지훈", "안예은"];
 
-    if (managerDateGroup === "월간") {
+    if (managerDateGroup === "Monthly") {
       // 월간 집계
       const allMonths = [];
       const current = new Date(startDate);
@@ -1975,110 +2580,155 @@ function App() {
     return result;
   }, [filteredRows]);
 
-  // ✅ 서비스유형/문의유형/문의유형(세부) 테이블 데이터 (기간 필터 적용)
+  // ✅ 서비스유형/문의유형/문의유형(세부) 테이블 데이터 (필터 없이 전체 캐시 데이터 사용)
   const serviceInquiryTableData = useMemo(() => {
-    if (filteredRows.length === 0) return [];
+    // tableDataCache 사용 (필터 없이 전체 캐시 데이터)
+    const allData = Array.isArray(tableDataCache) ? tableDataCache : [];
+    if (allData.length === 0) return [];
 
-    // 서비스유형, 문의유형, 문의유형_2차 조합별 집계
-    const map = new Map(); // key: "서비스유형|문의유형|문의유형_2차"
+    const counts = {};
+    const responseTimeData = {}; // 응답시간 데이터 수집용
     
-    filteredRows.forEach((row) => {
-      const tags = pickTagsFromRow(row);
-      const serviceType = tags.서비스유형 || "미분류";
-      const inquiryType = tags.문의유형 || "미분류";
-      let inquiryType2 = tags.문의유형_2차 || "";
+    allData.forEach((item) => {
+      const tags = pickTagsFromRow(item);
+      const 서비스유형 = tags.서비스유형 || "미분류";
       
-      // 문의유형이 "/"로 구분되어 있으면 첫 부분만 사용
-      let inquiryType1 = inquiryType;
-      if (inquiryType.includes("/")) {
-        inquiryType1 = inquiryType.split("/")[0].trim();
-        if (!inquiryType2) {
-          inquiryType2 = inquiryType.split("/").slice(1).join("/").trim();
-        }
+      // 엘리스트랙 제외
+      if (서비스유형 === "엘리스트랙" || 서비스유형.includes("엘리스트랙")) {
+        return;
       }
       
-      const key = `${serviceType}|${inquiryType1}|${inquiryType2 || "미분류"}`;
+      const 문의유형 = tags.문의유형 || "미분류";
+      const 문의유형_2차 = tags.문의유형_2차 || "미분류";
       
-      if (!map.has(key)) {
-        map.set(key, {
-          서비스유형: serviceType,
-          문의유형: inquiryType1,
-          문의유형_2차: inquiryType2 || "미분류",
-          문의량: 0,
-          총응답시간: [],
-          평균응답시간: [],
-        });
+      const key = `${서비스유형}|${문의유형}|${문의유형_2차}`;
+      counts[key] = (counts[key] || 0) + 1;
+      
+      // 응답시간 데이터 수집
+      if (!responseTimeData[key]) {
+        responseTimeData[key] = {
+          avgReplyTimes: [], // 평균 응답시간
+          totalReplyTimes: [], // 총 응답시간
+        };
       }
       
-      const item = map.get(key);
-      item.문의량 += 1;
+      // 평균 응답시간 (operationAvgReplyTime)
+      const avgReplyTime = timeToSec(item.operationAvgReplyTime);
+      if (avgReplyTime > 0) {
+        responseTimeData[key].avgReplyTimes.push(avgReplyTime);
+      }
       
-      // 응답시간 계산
-      const avgReplyTime = timeToSec(row.operationAvgReplyTime);
-      const totalReplyTime = timeToSec(row.operationTotalReplyTime);
-      
-      if (avgReplyTime > 0) item.평균응답시간.push(avgReplyTime);
-      if (totalReplyTime > 0) item.총응답시간.push(totalReplyTime);
+      // 총 응답시간 (operationTotalReplyTime)
+      const totalReplyTime = timeToSec(item.operationTotalReplyTime);
+      if (totalReplyTime > 0) {
+        responseTimeData[key].totalReplyTimes.push(totalReplyTime);
+      }
     });
-    
-    const total = filteredRows.length;
-    
-    // 배열을 평균값으로 변환하고 전체 테이블 데이터 생성
-    const result = Array.from(map.values()).map((item) => {
-      const avgAvgReplyTime = item.평균응답시간.length > 0
-        ? item.평균응답시간.reduce((sum, t) => sum + t, 0) / item.평균응답시간.length
-        : null;
-      const avgTotalReplyTime = item.총응답시간.length > 0
-        ? item.총응답시간.reduce((sum, t) => sum + t, 0) / item.총응답시간.length
-        : null;
+
+    const result = Object.entries(counts).map(([key, count]) => {
+      const [서비스유형, 문의유형, 문의유형_2차] = key.split("|");
+      const timeData = responseTimeData[key] || { avgReplyTimes: [], totalReplyTimes: [] };
+      
+      // 평균 응답시간 계산 (분 단위)
+      const avgResponseTime = timeData.avgReplyTimes.length > 0
+        ? Math.round((timeData.avgReplyTimes.reduce((s, t) => s + t, 0) / timeData.avgReplyTimes.length) * 100) / 100
+        : 0;
+      
+      // 총 응답시간 평균 계산 (분 단위)
+      const avgTotalResponseTime = timeData.totalReplyTimes.length > 0
+        ? Math.round((timeData.totalReplyTimes.reduce((s, t) => s + t, 0) / timeData.totalReplyTimes.length) * 100) / 100
+        : 0;
       
       return {
-        서비스유형: item.서비스유형,
-        문의유형: item.문의유형,
-        문의유형_2차: item.문의유형_2차,
-        문의량: item.문의량,
-        비율: total > 0 ? ((item.문의량 / total) * 100).toFixed(2) : "0.00",
-        평균응답시간: avgAvgReplyTime !== null ? parseFloat((avgAvgReplyTime / 60).toFixed(1)) : null, // 분 단위 (숫자로 변환)
-        총응답시간: avgTotalReplyTime !== null ? parseFloat((avgTotalReplyTime / 60).toFixed(1)) : null, // 분 단위 (숫자로 변환)
+        서비스유형,
+        문의유형,
+        문의유형_2차,
+        문의량: count,
+        평균응답시간: avgResponseTime,
+        총응답시간: avgTotalResponseTime,
       };
-    }); // 정렬은 별도 useMemo에서 처리
+    });
+
+    // 문의량 내림차순 정렬
+    result.sort((a, b) => b.문의량 - a.문의량);
     
-    return result;
-  }, [filteredRows]);
+    // 전체 문의량 계산 (비율 계산용)
+    const total = result.reduce((sum, item) => sum + item.문의량, 0);
+    
+    // 비율 추가
+    return result.map(item => ({
+      ...item,
+      비율: total > 0 ? ((item.문의량 / total) * 100).toFixed(2) : "0.00",
+    }));
+  }, [tableDataCache]);
 
-  // ✅ 서비스유형/문의유형별 문의량 테이블 정렬된 데이터
-  const sortedServiceInquiryTableData = useMemo(() => {
-    if (serviceInquiryTableData.length === 0) return [];
+  // ✅ 테이블 필터 옵션 생성
+  const tableFilterOptions = useMemo(() => {
+    const 서비스유형Set = new Set();
+    const 문의유형Set = new Set();
+    const 문의유형_2차Set = new Set();
+    
+    serviceInquiryTableData.forEach(item => {
+      if (item.서비스유형) 서비스유형Set.add(item.서비스유형);
+      if (item.문의유형) 문의유형Set.add(item.문의유형);
+      if (item.문의유형_2차) 문의유형_2차Set.add(item.문의유형_2차);
+    });
+    
+    return {
+      서비스유형: Array.from(서비스유형Set).sort(),
+      문의유형: Array.from(문의유형Set).sort(),
+      문의유형_2차: Array.from(문의유형_2차Set).sort(),
+    };
+  }, [serviceInquiryTableData]);
 
-    const sorted = [...serviceInquiryTableData];
-
+  // ✅ 필터링된 테이블 데이터
+  const filteredServiceInquiryTableData = useMemo(() => {
+    let filtered = [...serviceInquiryTableData];
+    
+    // 서비스유형 필터
+    if (serviceInquiryTableFilters.서비스유형.length > 0 && !serviceInquiryTableFilters.서비스유형.includes("전체")) {
+      filtered = filtered.filter(item => serviceInquiryTableFilters.서비스유형.includes(item.서비스유형));
+    }
+    
+    // 문의유형 필터
+    if (serviceInquiryTableFilters.문의유형.length > 0 && !serviceInquiryTableFilters.문의유형.includes("전체")) {
+      filtered = filtered.filter(item => serviceInquiryTableFilters.문의유형.includes(item.문의유형));
+    }
+    
+    // 문의유형_2차 필터
+    if (serviceInquiryTableFilters.문의유형_2차.length > 0 && !serviceInquiryTableFilters.문의유형_2차.includes("전체")) {
+      filtered = filtered.filter(item => serviceInquiryTableFilters.문의유형_2차.includes(item.문의유형_2차));
+    }
+    
+    // 정렬 적용
+    const sorted = [...filtered];
     sorted.sort((a, b) => {
       let aVal, bVal;
-
-      switch (serviceInquiryTableSortField) {
+      switch (tableSort.column) {
         case "문의량":
-          aVal = a.문의량;
-          bVal = b.문의량;
+          aVal = a.문의량 || 0;
+          bVal = b.문의량 || 0;
           break;
         case "평균응답시간":
-          aVal = a.평균응답시간 !== null ? a.평균응답시간 : -Infinity;
-          bVal = b.평균응답시간 !== null ? b.평균응답시간 : -Infinity;
+          aVal = a.평균응답시간 || 0;
+          bVal = b.평균응답시간 || 0;
           break;
         case "총응답시간":
-          aVal = a.총응답시간 !== null ? a.총응답시간 : -Infinity;
-          bVal = b.총응답시간 !== null ? b.총응답시간 : -Infinity;
+          aVal = a.총응답시간 || 0;
+          bVal = b.총응답시간 || 0;
           break;
         default:
           return 0;
       }
-
-      if (aVal < bVal) return serviceInquiryTableSortDirection === "asc" ? -1 : 1;
-      if (aVal > bVal) return serviceInquiryTableSortDirection === "asc" ? 1 : -1;
-      return 0;
+      if (tableSort.direction === "asc") {
+        return aVal - bVal;
+      } else {
+        return bVal - aVal;
+      }
     });
-
+    
     return sorted;
-  }, [serviceInquiryTableData, serviceInquiryTableSortField, serviceInquiryTableSortDirection]);
+  }, [serviceInquiryTableData, serviceInquiryTableFilters, tableSort]);
 
   // 유틸
   function timeToSec(t) {
@@ -2123,7 +2773,7 @@ function App() {
       </div>
     );
   }
-  if (!apiConnected) {
+  if (!apiConnected || apiConnected.ok !== true) {
     return (
       <div style={{ padding: 32, fontFamily: "sans-serif", textAlign: "center" }}>
         <h2>CS 대시보드</h2>
@@ -2301,6 +2951,38 @@ function App() {
               min={start}
               style={{ margin: "0 8px", padding: "4px 8px", borderRadius: "4px", border: "1px solid #ddd" }}
             />
+            {/* 인바운드/아웃바운드 필터 */}
+            <div style={{ marginLeft: "16px", display: "flex", alignItems: "center", gap: 16 }}>
+              <label style={{ fontWeight: "bold" }}>문의 유형:</label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={direction.includes("IB")}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setDirection([...direction, "IB"]);
+                    } else {
+                      setDirection(direction.filter(d => d !== "IB"));
+                    }
+                  }}
+                />
+                <span>인바운드 (IB)</span>
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={direction.includes("OB")}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setDirection([...direction, "OB"]);
+                    } else {
+                      setDirection(direction.filter(d => d !== "OB"));
+                    }
+                  }}
+                />
+                <span>아웃바운드 (OB)</span>
+              </label>
+            </div>
           </div>
         )}
 
@@ -2351,8 +3033,6 @@ function App() {
               }}
               values={filterVals}
               setValues={setFilterVals}
-              direction={direction}
-              onDirectionChange={setDirection}
             />
 
             {/* 차트 2열 */}
@@ -2385,7 +3065,7 @@ function App() {
                     borderRadius: 8,
                     overflow: "hidden"
                   }}>
-                    {["주간", "월간"].map(g => (
+                    {["Daily", "Weekly", "Monthly"].map(g => (
                       <button
                         key={g}
                         onClick={() => setCsDateGroup(g)}
@@ -2423,7 +3103,7 @@ function App() {
                   boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
                 }}
               >
-                {(mlDateGroup === "주간" ? avgTimeWeekly : avgTimeMonthly).length > 0 ? (
+                {(mlDateGroup === "Daily" ? avgTimeDaily : mlDateGroup === "Weekly" ? avgTimeWeekly : avgTimeMonthly).length > 0 ? (
                   <>
                     <div style={{ 
                       display: "flex", 
@@ -2438,7 +3118,7 @@ function App() {
                         borderRadius: 8,
                         overflow: "hidden"
                       }}>
-                        {["주간", "월간"].map(g => (
+                        {["Daily", "Weekly", "Monthly"].map(g => (
                           <button
                             key={g}
                             onClick={() => setMlDateGroup(g)}
@@ -2459,7 +3139,7 @@ function App() {
                     <div style={{ fontSize: "12px", color: "#999", marginBottom: "16px" }}>y축 단위: 분(min)</div>
 
                     <MultiLineChartSection
-                      data={mlDateGroup === "주간" ? avgTimeWeekly : avgTimeMonthly}
+                      data={mlDateGroup === "Daily" ? avgTimeDaily : mlDateGroup === "Weekly" ? avgTimeWeekly : avgTimeMonthly}
                       lines={[
                         { key: "operationWaitingTime", color: "#007bff", label: "첫응답시간" },
                         { key: "operationAvgReplyTime", color: "#28a745", label: "평균응답시간" },
@@ -2474,6 +3154,189 @@ function App() {
                   </>
                 ) : (
                   <div style={{ textAlign: "center", color: "#666", padding: "40px 0" }}>응답/해결 시간 데이터가 없습니다.</div>
+                )}
+              </div>
+            </div>
+
+            {/* 일자별 문의유형비율 및 일자별 채널비율 차트 */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: "12px",
+                marginBottom: "20px",
+              }}
+            >
+              {/* 일자별 문의유형비율 */}
+              <div
+                style={{
+                  backgroundColor: "white",
+                  padding: "20px",
+                  borderRadius: "12px",
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+                }}
+              >
+                <div style={{ 
+                  display: "flex", 
+                  alignItems: "center", 
+                  justifyContent: "space-between", 
+                  marginBottom: "16px" 
+                }}>
+                  <h3 style={{ color: "#333", fontWeight: "600", margin: 0 }}>
+                    일자별 문의유형비율
+                  </h3>
+                  <div style={{
+                    display: "inline-flex",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 8,
+                    overflow: "hidden"
+                  }}>
+                    {["Daily", "Weekly", "Monthly"].map(g => (
+                      <button
+                        key={g}
+                        onClick={() => setInquiryTypeDateGroup(g)}
+                        style={{
+                          padding: "6px 10px",
+                          fontSize: 12,
+                          border: "none",
+                          background: inquiryTypeDateGroup === g ? "#111827" : "#fff",
+                          color: inquiryTypeDateGroup === g ? "#fff" : "#374151",
+                          cursor: "pointer"
+                        }}
+                      >
+                        {g}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {inquiryTypeByDateData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={350}>
+                    <AreaChart data={inquiryTypeByDateData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="x축" />
+                      <YAxis />
+                      <Tooltip />
+                      <Legend />
+                      {(() => {
+                        // 모든 문의유형 수집
+                        const allTypes = new Set();
+                        inquiryTypeByDateData.forEach(item => {
+                          Object.keys(item).forEach(key => {
+                            if (key !== "x축" && key !== "date" && typeof item[key] === "number") {
+                              allTypes.add(key);
+                            }
+                          });
+                        });
+                        const colors = ["#8884d8", "#82ca9d", "#ffc658", "#ff7300", "#8dd1e1", "#d084d0", "#ffb347"];
+                        return Array.from(allTypes).map((type, idx) => (
+                          <Area
+                            key={type}
+                            type="monotone"
+                            dataKey={type}
+                            stackId="1"
+                            stroke={colors[idx % colors.length]}
+                            fill={colors[idx % colors.length]}
+                            fillOpacity={0.6}
+                          />
+                        ));
+                      })()}
+                    </AreaChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div style={{ textAlign: "center", color: "#666", padding: "40px 0" }}>
+                    문의유형 데이터가 없습니다.
+                  </div>
+                )}
+              </div>
+
+              {/* 일자별 채널비율 */}
+              <div
+                style={{
+                  backgroundColor: "white",
+                  padding: "20px",
+                  borderRadius: "12px",
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+                }}
+              >
+                <div style={{ 
+                  display: "flex", 
+                  alignItems: "center", 
+                  justifyContent: "space-between", 
+                  marginBottom: "16px" 
+                }}>
+                  <h3 style={{ color: "#333", fontWeight: "600", margin: 0 }}>
+                    일자별 채널비율
+                  </h3>
+                  <div style={{
+                    display: "inline-flex",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 8,
+                    overflow: "hidden"
+                  }}>
+                    {["Daily", "Weekly", "Monthly"].map(g => (
+                      <button
+                        key={g}
+                        onClick={() => setChannelDateGroup(g)}
+                        style={{
+                          padding: "6px 10px",
+                          fontSize: 12,
+                          border: "none",
+                          background: channelDateGroup === g ? "#111827" : "#fff",
+                          color: channelDateGroup === g ? "#fff" : "#374151",
+                          cursor: "pointer"
+                        }}
+                      >
+                        {g}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {channelByDateData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={350}>
+                    <AreaChart data={channelByDateData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="x축" />
+                      <YAxis />
+                      <Tooltip />
+                      <Legend />
+                      <Area
+                        type="monotone"
+                        dataKey="유선"
+                        stackId="1"
+                        stroke="#8884d8"
+                        fill="#8884d8"
+                        fillOpacity={0.6}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="이메일"
+                        stackId="1"
+                        stroke="#82ca9d"
+                        fill="#82ca9d"
+                        fillOpacity={0.6}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="카카오"
+                        stackId="1"
+                        stroke="#ffc658"
+                        fill="#ffc658"
+                        fillOpacity={0.6}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="채널톡"
+                        stackId="1"
+                        stroke="#ff7300"
+                        fill="#ff7300"
+                        fillOpacity={0.6}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div style={{ textAlign: "center", color: "#666", padding: "40px 0" }}>
+                    채널 데이터가 없습니다.
+                  </div>
                 )}
               </div>
             </div>
@@ -2654,6 +3517,216 @@ function App() {
               )}
             </div>
 
+            {/* 서비스유형/문의유형/문의유형(세부) 테이블 */}
+            {filteredServiceInquiryTableData.length > 0 && (
+              <div
+                style={{
+                  backgroundColor: "white",
+                  padding: "20px",
+                  borderRadius: "12px",
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+                  marginBottom: "20px",
+                }}
+              >
+                <h3 style={{ marginBottom: "16px", color: "#333", fontWeight: "600" }}>
+                  서비스유형/문의유형별 문의량 ({filteredServiceInquiryTableData.reduce((sum, item) => sum + (item.문의량 || 0), 0).toLocaleString()}건)
+                </h3>
+                <div style={{ overflowX: "auto" }}>
+                  <table
+                    style={{
+                      width: "100%",
+                      borderCollapse: "collapse",
+                      fontSize: "14px",
+                    }}
+                  >
+                    <thead>
+                      <tr style={{ backgroundColor: "#f8f9fa", borderBottom: "2px solid #dee2e6" }}>
+                        <th
+                          style={{
+                            padding: "12px",
+                            textAlign: "left",
+                            fontWeight: "600",
+                            color: "#495057",
+                            borderBottom: "2px solid #dee2e6",
+                          }}
+                        >
+                          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                            <span>서비스유형</span>
+                            <MultiSelectDropdown
+                              options={tableFilterOptions.서비스유형}
+                              value={serviceInquiryTableFilters.서비스유형}
+                              onChange={(vals) => setServiceInquiryTableFilters(prev => ({ ...prev, 서비스유형: vals }))}
+                              placeholder="전체"
+                              width="100%"
+                              maxTagCount={1}
+                            />
+                          </div>
+                        </th>
+                        <th
+                          style={{
+                            padding: "12px",
+                            textAlign: "left",
+                            fontWeight: "600",
+                            color: "#495057",
+                            borderBottom: "2px solid #dee2e6",
+                          }}
+                        >
+                          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                            <span>문의유형</span>
+                            <MultiSelectDropdown
+                              options={tableFilterOptions.문의유형}
+                              value={serviceInquiryTableFilters.문의유형}
+                              onChange={(vals) => setServiceInquiryTableFilters(prev => ({ ...prev, 문의유형: vals }))}
+                              placeholder="전체"
+                              width="100%"
+                              maxTagCount={1}
+                            />
+                          </div>
+                        </th>
+                        <th
+                          style={{
+                            padding: "12px",
+                            textAlign: "left",
+                            fontWeight: "600",
+                            color: "#495057",
+                            borderBottom: "2px solid #dee2e6",
+                          }}
+                        >
+                          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                            <span>문의유형(세부)</span>
+                            <MultiSelectDropdown
+                              options={tableFilterOptions.문의유형_2차}
+                              value={serviceInquiryTableFilters.문의유형_2차}
+                              onChange={(vals) => setServiceInquiryTableFilters(prev => ({ ...prev, 문의유형_2차: vals }))}
+                              placeholder="전체"
+                              width="100%"
+                              maxTagCount={1}
+                            />
+                          </div>
+                        </th>
+                        <th
+                          style={{
+                            padding: "12px",
+                            textAlign: "right",
+                            fontWeight: "600",
+                            color: "#495057",
+                            borderBottom: "2px solid #dee2e6",
+                            cursor: "pointer",
+                            userSelect: "none",
+                          }}
+                          onClick={() => {
+                            setTableSort(prev => ({
+                              column: "문의량",
+                              direction: prev.column === "문의량" && prev.direction === "desc" ? "asc" : "desc",
+                            }));
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "4px" }}>
+                            문의량
+                            <span style={{ fontSize: "12px" }}>
+                              {tableSort.column === "문의량" ? (tableSort.direction === "desc" ? "↓" : "↑") : "⇅"}
+                            </span>
+                          </div>
+                        </th>
+                        <th
+                          style={{
+                            padding: "12px",
+                            textAlign: "right",
+                            fontWeight: "600",
+                            color: "#495057",
+                            borderBottom: "2px solid #dee2e6",
+                          }}
+                        >
+                          비율
+                        </th>
+                        <th
+                          style={{
+                            padding: "12px",
+                            textAlign: "right",
+                            fontWeight: "600",
+                            color: "#495057",
+                            borderBottom: "2px solid #dee2e6",
+                            cursor: "pointer",
+                            userSelect: "none",
+                          }}
+                          onClick={() => {
+                            setTableSort(prev => ({
+                              column: "평균응답시간",
+                              direction: prev.column === "평균응답시간" && prev.direction === "desc" ? "asc" : "desc",
+                            }));
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "4px" }}>
+                            평균응답시간
+                            <span style={{ fontSize: "12px" }}>
+                              {tableSort.column === "평균응답시간" ? (tableSort.direction === "desc" ? "↓" : "↑") : "⇅"}
+                            </span>
+                          </div>
+                        </th>
+                        <th
+                          style={{
+                            padding: "12px",
+                            textAlign: "right",
+                            fontWeight: "600",
+                            color: "#495057",
+                            borderBottom: "2px solid #dee2e6",
+                            cursor: "pointer",
+                            userSelect: "none",
+                          }}
+                          onClick={() => {
+                            setTableSort(prev => ({
+                              column: "총응답시간",
+                              direction: prev.column === "총응답시간" && prev.direction === "desc" ? "asc" : "desc",
+                            }));
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "4px" }}>
+                            총응답시간
+                            <span style={{ fontSize: "12px" }}>
+                              {tableSort.column === "총응답시간" ? (tableSort.direction === "desc" ? "↓" : "↑") : "⇅"}
+                            </span>
+                          </div>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredServiceInquiryTableData.map((item, index) => (
+                        <tr
+                          key={index}
+                          style={{
+                            borderBottom: "1px solid #e9ecef",
+                            backgroundColor: index % 2 === 0 ? "white" : "#f8f9fa",
+                          }}
+                        >
+                          <td style={{ padding: "12px", color: "#495057" }}>
+                            {item.서비스유형}
+                          </td>
+                          <td style={{ padding: "12px", color: "#495057" }}>
+                            {item.문의유형}
+                          </td>
+                          <td style={{ padding: "12px", color: "#495057" }}>
+                            {item.문의유형_2차}
+                          </td>
+                          <td style={{ padding: "12px", textAlign: "right", fontWeight: "500", color: "#495057" }}>
+                            {item.문의량.toLocaleString()}
+                          </td>
+                          <td style={{ padding: "12px", textAlign: "right", fontWeight: "500", color: "#495057" }}>
+                            {item.비율}%
+                          </td>
+                          <td style={{ padding: "12px", textAlign: "right", fontWeight: "500", color: "#495057" }}>
+                            {item.평균응답시간 > 0 ? `${item.평균응답시간.toFixed(1)}분` : "-"}
+                          </td>
+                          <td style={{ padding: "12px", textAlign: "right", fontWeight: "500", color: "#495057" }}>
+                            {item.총응답시간 > 0 ? `${item.총응답시간.toFixed(1)}분` : "-"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             {/* 처리유형 분석 섹션 */}
             <div style={{ marginTop: 20 }}>
               <div style={{
@@ -2692,199 +3765,6 @@ function App() {
                 <DayOfWeekTimeDistributionChart rows={filteredRows} />
               </div>
             </div>
-
-            {/* 서비스유형/문의유형별 문의량 테이블 */}
-            {serviceInquiryTableData.length > 0 && (
-              <div style={{ marginBottom: "24px" }}>
-                <div
-                  style={{
-                    backgroundColor: "white",
-                    padding: "20px",
-                    borderRadius: "12px",
-                    boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
-                  }}
-                >
-                  <h3 style={{ marginBottom: "16px", color: "#333", fontWeight: "600" }}>
-                    서비스유형/문의유형별 문의량 ({filteredRows.length}건)
-                  </h3>
-                  <div style={{ overflowX: "auto" }}>
-                    <table
-                      style={{
-                        width: "100%",
-                        borderCollapse: "collapse",
-                        fontSize: "13px",
-                      }}
-                    >
-                      <thead>
-                        <tr style={{ backgroundColor: "#f8f9fa" }}>
-                          <th
-                            style={{
-                              padding: "12px",
-                              textAlign: "left",
-                              borderBottom: "2px solid #dee2e6",
-                              fontWeight: "600",
-                              color: "#495057",
-                            }}
-                          >
-                            서비스유형
-                          </th>
-                          <th
-                            style={{
-                              padding: "12px",
-                              textAlign: "left",
-                              borderBottom: "2px solid #dee2e6",
-                              fontWeight: "600",
-                              color: "#495057",
-                            }}
-                          >
-                            문의유형
-                          </th>
-                          <th
-                            style={{
-                              padding: "12px",
-                              textAlign: "left",
-                              borderBottom: "2px solid #dee2e6",
-                              fontWeight: "600",
-                              color: "#495057",
-                            }}
-                          >
-                            문의유형(세부)
-                          </th>
-                          <th
-                            onClick={() => {
-                              if (serviceInquiryTableSortField === "평균응답시간") {
-                                setServiceInquiryTableSortDirection(
-                                  serviceInquiryTableSortDirection === "asc" ? "desc" : "asc"
-                                );
-                              } else {
-                                setServiceInquiryTableSortField("평균응답시간");
-                                setServiceInquiryTableSortDirection("desc");
-                              }
-                            }}
-                            style={{
-                              padding: "12px",
-                              textAlign: "right",
-                              borderBottom: "2px solid #dee2e6",
-                              fontWeight: "600",
-                              color: "#495057",
-                              cursor: "pointer",
-                              userSelect: "none",
-                            }}
-                          >
-                            평균응답시간{" "}
-                            {serviceInquiryTableSortField === "평균응답시간"
-                              ? serviceInquiryTableSortDirection === "asc"
-                                ? "↑"
-                                : "↓"
-                              : "↕"}
-                          </th>
-                          <th
-                            onClick={() => {
-                              if (serviceInquiryTableSortField === "총응답시간") {
-                                setServiceInquiryTableSortDirection(
-                                  serviceInquiryTableSortDirection === "asc" ? "desc" : "asc"
-                                );
-                              } else {
-                                setServiceInquiryTableSortField("총응답시간");
-                                setServiceInquiryTableSortDirection("desc");
-                              }
-                            }}
-                            style={{
-                              padding: "12px",
-                              textAlign: "right",
-                              borderBottom: "2px solid #dee2e6",
-                              fontWeight: "600",
-                              color: "#495057",
-                              cursor: "pointer",
-                              userSelect: "none",
-                            }}
-                          >
-                            총응답시간{" "}
-                            {serviceInquiryTableSortField === "총응답시간"
-                              ? serviceInquiryTableSortDirection === "asc"
-                                ? "↑"
-                                : "↓"
-                              : "↕"}
-                          </th>
-                          <th
-                            onClick={() => {
-                              if (serviceInquiryTableSortField === "문의량") {
-                                setServiceInquiryTableSortDirection(
-                                  serviceInquiryTableSortDirection === "asc" ? "desc" : "asc"
-                                );
-                              } else {
-                                setServiceInquiryTableSortField("문의량");
-                                setServiceInquiryTableSortDirection("desc");
-                              }
-                            }}
-                            style={{
-                              padding: "12px",
-                              textAlign: "right",
-                              borderBottom: "2px solid #dee2e6",
-                              fontWeight: "600",
-                              color: "#495057",
-                              cursor: "pointer",
-                              userSelect: "none",
-                            }}
-                          >
-                            문의량{" "}
-                            {serviceInquiryTableSortField === "문의량"
-                              ? serviceInquiryTableSortDirection === "asc"
-                                ? "↑"
-                                : "↓"
-                              : "↕"}
-                          </th>
-                          <th
-                            style={{
-                              padding: "12px",
-                              textAlign: "right",
-                              borderBottom: "2px solid #dee2e6",
-                              fontWeight: "600",
-                              color: "#495057",
-                            }}
-                          >
-                            비율
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sortedServiceInquiryTableData.map((row, idx) => (
-                          <tr
-                            key={idx}
-                            style={{
-                              borderBottom: "1px solid #e9ecef",
-                              backgroundColor: idx % 2 === 0 ? "#ffffff" : "#f8f9fa",
-                            }}
-                          >
-                            <td style={{ padding: "12px", color: "#495057" }}>
-                              {row.서비스유형}
-                            </td>
-                            <td style={{ padding: "12px", color: "#495057" }}>
-                              {row.문의유형}
-                            </td>
-                            <td style={{ padding: "12px", color: "#495057" }}>
-                              {row.문의유형_2차}
-                            </td>
-                            <td style={{ padding: "12px", textAlign: "right", color: "#495057" }}>
-                              {row.평균응답시간 !== null ? `${row.평균응답시간}분` : "-"}
-                            </td>
-                            <td style={{ padding: "12px", textAlign: "right", color: "#495057" }}>
-                              {row.총응답시간 !== null ? `${row.총응답시간}분` : "-"}
-                            </td>
-                            <td style={{ padding: "12px", textAlign: "right", color: "#495057", fontWeight: "600" }}>
-                              {row.문의량}
-                            </td>
-                            <td style={{ padding: "12px", textAlign: "right", color: "#495057" }}>
-                              {row.비율}%
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            )}
 
             {/* 담당자별 통계 섹션 */}
             <div style={{ marginTop: "24px" }}>
@@ -3738,7 +4618,8 @@ function App() {
                         { name: "문의", key: "문의", color: "#e3f2fd" },
                         { name: "견적", key: "견적", color: "#bbdefb" },
                         { name: "계약", key: "계약", color: "#64b5f6" },
-                        { name: "정산", key: "정산", color: "#1976d2" }
+                        { name: "정산", key: "정산", color: "#1976d2" },
+                        { name: "수주실패", key: "수주실패", color: "#ffcdd2" }
                       ];
                       
                       // 날짜 필터링 함수
@@ -3781,14 +4662,16 @@ function App() {
                       const counts = rawCounts;
                       
                       // 전환율 계산용 누적값 (전환율만 누적식으로 계산)
+                      // 수주실패는 전환율 계산에서 제외
                       const cumulativeForConversion = {
                         "문의": rawCounts["문의"],
                         "견적": rawCounts["견적"] + rawCounts["계약"] + rawCounts["정산"],
                         "계약": rawCounts["계약"] + rawCounts["정산"],
-                        "정산": rawCounts["정산"]
+                        "정산": rawCounts["정산"],
+                        "수주실패": 0 // 수주실패는 전환율 계산에 포함하지 않음
                       };
                       
-                      // 전체 고객 수 (전환율 계산 분모)
+                      // 전체 고객 수 (전환율 계산 분모) - 수주실패는 전환율 계산에서 제외
                       const totalCustomers = rawCounts["문의"] + rawCounts["견적"] + rawCounts["계약"] + rawCounts["정산"];
                       
                       const maxCount = Math.max(...Object.values(counts), 1);
@@ -3904,9 +4787,6 @@ function App() {
 
                   {/* 2. 계약/정산 총금액 카드 (상단으로 이동) */}
                   <CloudAmountSummaryCard cloudCustomers={cloudCustomers} resourceMap={resourceMap} />
-
-                  {/* 2-1. 사용기간 타임라인 */}
-                  <CloudTimelineChart cloudCustomers={cloudCustomers} resourceMap={resourceMap} />
 
                   {/* 3~4. CRM 관련 차트 묶음 */}
                   <CloudCrmChartsSection crmCustomers={crmCustomers} />
@@ -4518,6 +5398,24 @@ function App() {
                 
                 <div>
                   <label style={{ display: "block", marginBottom: "4px", fontSize: "14px", fontWeight: "500" }}>
+                    담당자
+                  </label>
+                  <input
+                    type="text"
+                    value={cloudFormData.담당자}
+                    onChange={(e) => setCloudFormData({ ...cloudFormData, 담당자: e.target.value })}
+                    style={{
+                      width: "100%",
+                      padding: "8px",
+                      border: "1px solid #ced4da",
+                      borderRadius: "4px",
+                      fontSize: "14px"
+                    }}
+                  />
+                </div>
+                
+                <div>
+                  <label style={{ display: "block", marginBottom: "4px", fontSize: "14px", fontWeight: "500" }}>
                     이름 <span style={{ color: "red" }}>*</span>
                   </label>
                   <input
@@ -4594,7 +5492,8 @@ function App() {
                     문의날짜
                   </label>
                   <input
-                    type="date"
+                    type="text"
+                    placeholder="YYYY-MM-DD 형식으로 입력"
                     value={cloudFormData.문의날짜}
                     onChange={(e) => setCloudFormData({ ...cloudFormData, 문의날짜: e.target.value })}
                     style={{
@@ -4646,6 +5545,7 @@ function App() {
                     <option value="견적">견적</option>
                     <option value="계약">계약</option>
                     <option value="정산">정산</option>
+                    <option value="수주실패">수주실패</option>
                   </select>
                 </div>
                 
@@ -5072,6 +5972,12 @@ function App() {
               </div>
             </div>
 
+            {/* 타임라인 차트 */}
+            <CloudTimelineChart
+              cloudCustomers={cloudCustomers}
+              resourceMap={resourceMap}
+            />
+
             {/* 고객 목록 테이블 */}
             <div>
               {(() => {
@@ -5079,6 +5985,8 @@ function App() {
                 const 사업유형Options = ["전체", ...new Set(cloudCustomers.map(c => c.사업유형).filter(Boolean))];
                 const 세일즈단계Options = ["전체", ...new Set(cloudCustomers.map(c => c.세일즈단계).filter(Boolean))];
                 const 사용유형Options = ["전체", ...new Set(cloudCustomers.map(c => c.사용유형).filter(Boolean))];
+                const 담당자Options = ["전체", "우지훈", "조용준", "안예은", "없음"];
+                const 서비스유형Options = ["전체", ...new Set(cloudCustomers.map(c => c.서비스유형).filter(Boolean))];
 
                 // 필터링된 고객 데이터 계산
                 const search = (tableSearch || "").trim().toLowerCase();
@@ -5086,12 +5994,16 @@ function App() {
                   const 사업유형Match = tableFilters.사업유형 === "전체" || customer.사업유형 === tableFilters.사업유형;
                   const 세일즈단계Match = tableFilters.세일즈단계 === "전체" || customer.세일즈단계 === tableFilters.세일즈단계;
                   const 사용유형Match = tableFilters.사용유형 === "전체" || customer.사용유형 === tableFilters.사용유형;
+                  // 담당자 필터링: "없음"은 담당자가 없거나 빈 문자열인 경우
+                  const 담당자Match = tableFilters.담당자 === "전체" || 
+                    (tableFilters.담당자 === "없음" ? (!customer.담당자 || customer.담당자.trim() === "") : customer.담당자 === tableFilters.담당자);
+                  const 서비스유형Match = tableFilters.서비스유형 === "전체" || customer.서비스유형 === tableFilters.서비스유형;
                   // 선택된 컬럼만 검색
                   const fieldKey = tableSearchField; // "이름" | "이메일" | "기관"
                   const fieldValue = ((customer?.[fieldKey]) || "").toString().toLowerCase();
                   const searchMatch = !search || fieldValue.includes(search);
                   
-                  return 사업유형Match && 세일즈단계Match && 사용유형Match && searchMatch;
+                  return 사업유형Match && 세일즈단계Match && 사용유형Match && 담당자Match && 서비스유형Match && searchMatch;
                 })
                 .sort((a, b) => {
                   // 업데이트 날짜 기준 최신순 (내림차순)
@@ -5189,11 +6101,6 @@ function App() {
                         />
                       </div>
                     </div>
-            
-            {/* 사용기간 타임라인 */}
-            <div style={{ marginBottom: "32px" }}>
-              <CloudTimelineChart cloudCustomers={cloudCustomers} resourceMap={resourceMap} />
-            </div>
               
                     {filteredCustomers.length === 0 ? (
                 <div style={{
@@ -5206,16 +6113,18 @@ function App() {
                   등록된 고객이 없습니다. 위 폼을 사용하여 고객을 등록해주세요.
                 </div>
               ) : (
-                <div style={{ width: "100%" }}>
+                <div style={{ width: "100%", overflowX: "auto" }}>
                   <table style={{
                     width: "100%",
+                    minWidth: "1400px",
                     borderCollapse: "collapse",
-                    fontSize: "11px",
-                    backgroundColor: "white"
+                    fontSize: "12px",
+                    backgroundColor: "white",
+                    tableLayout: "fixed"
                   }}>
                     <thead>
                       <tr style={{ backgroundColor: "#f8f9fa" }}>
-                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "75px" }}>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "50px" }}>
                           <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
                             <span>사업유형</span>
                             <select 
@@ -5225,8 +6134,9 @@ function App() {
                                 fontSize: "9px", 
                                 padding: "1px 2px", 
                                 border: "1px solid #ccc", 
-                                borderRadius: "3px",
-                                backgroundColor: "white"
+                                borderRadius: "2px",
+                                backgroundColor: "white",
+                                width: "100%"
                               }}
                             >
                               {사업유형Options.map(option => (
@@ -5235,16 +6145,32 @@ function App() {
                             </select>
                           </div>
                         </th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", whiteSpace: "nowrap", width: "70px" }}>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", whiteSpace: "nowrap", width: "50px" }}>
                           <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
                             <span>담당자</span>
+                            <select 
+                              value={tableFilters.담당자}
+                              onChange={(e) => setTableFilters({...tableFilters, 담당자: e.target.value})}
+                              style={{ 
+                                fontSize: "9px", 
+                                padding: "1px 2px", 
+                                border: "1px solid #ccc", 
+                                borderRadius: "2px",
+                                backgroundColor: "white",
+                                width: "100%"
+                              }}
+                            >
+                              {담당자Options.map(option => (
+                                <option key={option} value={option}>{option}</option>
+                              ))}
+                            </select>
                           </div>
                         </th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", whiteSpace: "nowrap", width: "100px" }}>이름</th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "120px" }}>소속</th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "80px" }}>기관페이지</th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "150px" }}>이메일</th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "100px" }}>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "60px" }}>이름</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "80px" }}>소속</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "65px" }}>기관페이지</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "100px" }}>이메일</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "60px" }}>
                           <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
                             <span>세일즈 단계</span>
                             <select 
@@ -5254,8 +6180,9 @@ function App() {
                                 fontSize: "9px", 
                                 padding: "1px 2px", 
                                 border: "1px solid #ccc", 
-                                borderRadius: "3px",
-                                backgroundColor: "white"
+                                borderRadius: "2px",
+                                backgroundColor: "white",
+                                width: "100%"
                               }}
                             >
                               {세일즈단계Options.map(option => (
@@ -5264,11 +6191,11 @@ function App() {
                             </select>
                           </div>
                         </th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "100px" }}>문의날짜</th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "100px" }}>계약날짜</th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "150px" }}>사용기간</th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "200px" }}>사용자원</th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", whiteSpace: "nowrap", width: "100px" }}>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "60px" }}>문의날짜</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "60px" }}>계약날짜</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "130px" }}>사용기간</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "80px" }}>사용자원</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", whiteSpace: "nowrap", width: "75px" }}>
                           <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
                             <span>사용유형</span>
                             <select 
@@ -5278,8 +6205,9 @@ function App() {
                                 fontSize: "9px", 
                                 padding: "1px 2px", 
                                 border: "1px solid #ccc", 
-                                borderRadius: "3px",
-                                backgroundColor: "white"
+                                borderRadius: "2px",
+                                backgroundColor: "white",
+                                width: "100%"
                               }}
                             >
                               {사용유형Options.map(option => (
@@ -5288,9 +6216,30 @@ function App() {
                             </select>
                           </div>
                         </th>
-                        <th style={{ padding: "6px 8px", textAlign: "right", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "105px" }}>견적/정산금액</th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "200px" }}>비고</th>
-                        <th style={{ padding: "6px 8px", textAlign: "center", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "120px" }}>업데이트 날짜</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "80px" }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                            <span>서비스유형</span>
+                            <select 
+                              value={tableFilters.서비스유형}
+                              onChange={(e) => setTableFilters({...tableFilters, 서비스유형: e.target.value})}
+                              style={{ 
+                                fontSize: "9px", 
+                                padding: "1px 2px", 
+                                border: "1px solid #ccc", 
+                                borderRadius: "2px",
+                                backgroundColor: "white",
+                                width: "100%"
+                              }}
+                            >
+                              {서비스유형Options.map(option => (
+                                <option key={option} value={option}>{option}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </th>
+                        <th style={{ padding: "6px 8px", textAlign: "right", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "70px" }}>견적/정산금액</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "120px" }}>비고</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "50px" }}>업데이트 날짜</th>
                         <th style={{ padding: "6px 8px", textAlign: "center", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "70px" }}>작업</th>
                       </tr>
                     </thead>
@@ -5301,45 +6250,282 @@ function App() {
                           backgroundColor: index % 2 === 0 ? "#ffffff" : "#f8f9fa"
                         }}>
                           <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.사업유형 || "-"}</td>
-                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.담당자 || "-"}</td>
-                          <td style={{ padding: "6px 8px", fontSize: "11px", whiteSpace: "nowrap" }}>{customer.이름 || "-"}</td>
-                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.기관 || "-"}</td>
+                          <td style={{ padding: "6px 8px", whiteSpace: "nowrap", fontSize: "11px" }}>{customer.담당자 || "-"}</td>
+                          <td style={{ 
+                            padding: "6px 8px", 
+                            fontSize: "11px",
+                            width: "60px",
+                            maxWidth: "60px",
+                            wordBreak: customer.이름 && customer.이름.length > 3 ? "break-word" : "normal",
+                            whiteSpace: customer.이름 && customer.이름.length > 3 ? "normal" : "nowrap",
+                            lineHeight: "1.4"
+                          }}>{customer.이름 || "-"}</td>
+                          <td style={{ padding: "6px 8px", maxWidth: "80px", fontSize: "11px" }}>
+                            {customer.기관 ? (
+                              <div
+                                style={{
+                                  fontSize: "12px",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                  cursor: "help",
+                                  position: "relative"
+                                }}
+                                title={customer.기관}
+                                onMouseEnter={(e) => {
+                                  // 툴팁 표시
+                                  const tooltip = document.createElement('div');
+                                  tooltip.id = 'institution-tooltip';
+                                  tooltip.style.cssText = `
+                                    position: absolute;
+                                    background: #333;
+                                    color: white;
+                                    padding: 8px 12px;
+                                    border-radius: 4px;
+                                    font-size: 12px;
+                                    white-space: pre-line;
+                                    z-index: 10000;
+                                    pointer-events: none;
+                                    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+                                    max-width: 300px;
+                                  `;
+                                  tooltip.textContent = customer.기관;
+                                  document.body.appendChild(tooltip);
+                                  
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  tooltip.style.left = `${rect.left + rect.width / 2}px`;
+                                  tooltip.style.top = `${rect.bottom + 8}px`;
+                                  tooltip.style.transform = 'translateX(-50%)';
+                                }}
+                                onMouseLeave={() => {
+                                  const tooltip = document.getElementById('institution-tooltip');
+                                  if (tooltip) {
+                                    tooltip.remove();
+                                  }
+                                }}
+                                onMouseMove={(e) => {
+                                  const tooltip = document.getElementById('institution-tooltip');
+                                  if (tooltip) {
+                                    const rect = e.currentTarget.getBoundingClientRect();
+                                    tooltip.style.left = `${rect.left + rect.width / 2}px`;
+                                    tooltip.style.top = `${rect.bottom + 8}px`;
+                                  }
+                                }}
+                              >
+                                {customer.기관}
+                              </div>
+                            ) : "-"}
+                          </td>
                           <td style={{ padding: "6px 8px", fontSize: "11px" }}>
                             {customer.기관페이지링크 ? (
-                              <a href={customer.기관페이지링크} target="_blank" rel="noopener noreferrer" style={{ color: "#007bff", textDecoration: "none", fontSize: "11px" }}>
+                              <a href={customer.기관페이지링크} target="_blank" rel="noopener noreferrer" style={{ color: "#007bff", textDecoration: "none" }}>
                                 링크
                               </a>
                             ) : "-"}
                           </td>
-                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.이메일 || "-"}</td>
+                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>
+                            {customer.이메일 ? (
+                              <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                <span style={{ 
+                                  overflow: "hidden", 
+                                  textOverflow: "ellipsis", 
+                                  whiteSpace: "nowrap",
+                                  flex: 1,
+                                  minWidth: 0
+                                }}>
+                                  {customer.이메일}
+                                </span>
+                                <button
+                                  onClick={async () => {
+                                    try {
+                                      await navigator.clipboard.writeText(customer.이메일);
+                                      alert("이메일이 클립보드에 복사되었습니다.");
+                                    } catch (err) {
+                                      console.error("복사 실패:", err);
+                                      alert("복사에 실패했습니다.");
+                                    }
+                                  }}
+                                  style={{
+                                    padding: "2px 6px",
+                                    backgroundColor: "#6c757d",
+                                    color: "white",
+                                    border: "none",
+                                    borderRadius: "3px",
+                                    cursor: "pointer",
+                                    fontSize: "9px",
+                                    whiteSpace: "nowrap",
+                                    flexShrink: 0
+                                  }}
+                                  title="이메일 복사"
+                                >
+                                  복사
+                                </button>
+                              </div>
+                            ) : "-"}
+                          </td>
                           <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.세일즈단계 || "-"}</td>
                           <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.문의날짜 || "-"}</td>
                           <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.계약날짜 || "-"}</td>
                           <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.사용기간 || "-"}</td>
-                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>
-                            {customer.사용자원 && Array.isArray(customer.사용자원) && customer.사용자원.length > 0 ? (
-                              <div style={{ fontSize: "10px" }}>
-                                {customer.사용자원.map((item, idx) => (
-                                  <div key={idx} style={{ marginBottom: idx < customer.사용자원.length - 1 ? "2px" : "0" }}>
-                                    {resourceMap[item.resource] || item.resource}
-                                    {item.quantity && ` (${item.quantity}개)`}
+                          <td style={{ padding: "6px 8px", maxWidth: "80px", fontSize: "11px" }}>
+                            {(() => {
+                              // 사용자원 데이터 준비
+                              let resources = [];
+                              if (customer.사용자원 && Array.isArray(customer.사용자원) && customer.사용자원.length > 0) {
+                                resources = customer.사용자원.map((item) => ({
+                                  name: resourceMap[item.resource] || item.resource,
+                                  quantity: item.quantity || 1,
+                                  fullText: `${resourceMap[item.resource] || item.resource}${item.quantity ? ` (${item.quantity}개)` : ''}`
+                                }));
+                              } else if (customer.사용자원 && typeof customer.사용자원 === 'string') {
+                                // 이전 데이터 호환성 (문자열로 저장된 경우)
+                                resources = [{
+                                  name: resourceMap[customer.사용자원] || customer.사용자원,
+                                  quantity: customer.사용자원수량 || 1,
+                                  fullText: `${resourceMap[customer.사용자원] || customer.사용자원}${customer.사용자원수량 ? ` (${customer.사용자원수량}개)` : ''}`
+                                }];
+                              }
+
+                              if (resources.length === 0) return "-";
+
+                              // 간략 표시: 첫 번째 자원만 표시하고 나머지는 개수로
+                              const firstResource = resources[0];
+                              const displayText = resources.length === 1 
+                                ? firstResource.fullText
+                                : `${firstResource.name}${firstResource.quantity > 1 ? ` (${firstResource.quantity}개)` : ''} 외 ${resources.length - 1}개`;
+
+                              // 전체 텍스트 (호버용)
+                              const fullText = resources.map(r => r.fullText).join('\n');
+
+                              return (
+                                <div
+                                  style={{
+                                    fontSize: "12px",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                    cursor: "help",
+                                    position: "relative"
+                                  }}
+                                  title={fullText}
+                                  onMouseEnter={(e) => {
+                                    // 툴팁 표시
+                                    const tooltip = document.createElement('div');
+                                    tooltip.id = 'resource-tooltip';
+                                    tooltip.style.cssText = `
+                                      position: absolute;
+                                      background: #333;
+                                      color: white;
+                                      padding: 8px 12px;
+                                      border-radius: 4px;
+                                      font-size: 12px;
+                                      white-space: pre-line;
+                                      z-index: 10000;
+                                      pointer-events: none;
+                                      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+                                      max-width: 300px;
+                                    `;
+                                    tooltip.textContent = fullText;
+                                    document.body.appendChild(tooltip);
+                                    
+                                    const rect = e.currentTarget.getBoundingClientRect();
+                                    tooltip.style.left = `${rect.left + rect.width / 2}px`;
+                                    tooltip.style.top = `${rect.bottom + 8}px`;
+                                    tooltip.style.transform = 'translateX(-50%)';
+                                  }}
+                                  onMouseLeave={() => {
+                                    const tooltip = document.getElementById('resource-tooltip');
+                                    if (tooltip) {
+                                      tooltip.remove();
+                                    }
+                                  }}
+                                  onMouseMove={(e) => {
+                                    const tooltip = document.getElementById('resource-tooltip');
+                                    if (tooltip) {
+                                      const rect = e.currentTarget.getBoundingClientRect();
+                                      tooltip.style.left = `${rect.left + rect.width / 2}px`;
+                                      tooltip.style.top = `${rect.bottom + 8}px`;
+                                    }
+                                  }}
+                                >
+                                  {displayText}
                                   </div>
-                                ))}
+                              );
+                            })()}
+                          </td>
+                          <td style={{ padding: "6px 8px", whiteSpace: "nowrap", fontSize: "11px" }}>{customer.사용유형 || "-"}</td>
+                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.서비스유형 || "-"}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "right", fontSize: "11px" }}>
+                            {(() => {
+                              const amount = customer["견적/정산금액"];
+                              if (!amount) return "-";
+                              // 숫자인지 확인
+                              const numAmount = parseFloat(amount.toString().replace(/,/g, ''));
+                              if (!isNaN(numAmount)) {
+                                return numAmount.toLocaleString('ko-KR');
+                              }
+                              return amount;
+                            })()}
+                          </td>
+                          <td style={{ padding: "6px 8px", maxWidth: "120px", fontSize: "11px" }}>
+                            {customer.비고 ? (
+                              <div
+                                style={{
+                                  fontSize: "12px",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                  cursor: "help",
+                                  position: "relative"
+                                }}
+                                title={customer.비고}
+                                onMouseEnter={(e) => {
+                                  // 툴팁 표시
+                                  const tooltip = document.createElement('div');
+                                  tooltip.id = 'remarks-tooltip';
+                                  tooltip.style.cssText = `
+                                    position: absolute;
+                                    background: #333;
+                                    color: white;
+                                    padding: 8px 12px;
+                                    border-radius: 4px;
+                                    font-size: 12px;
+                                    white-space: pre-line;
+                                    z-index: 10000;
+                                    pointer-events: none;
+                                    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+                                    max-width: 300px;
+                                  `;
+                                  tooltip.textContent = customer.비고;
+                                  document.body.appendChild(tooltip);
+                                  
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  tooltip.style.left = `${rect.left + rect.width / 2}px`;
+                                  tooltip.style.top = `${rect.bottom + 8}px`;
+                                  tooltip.style.transform = 'translateX(-50%)';
+                                }}
+                                onMouseLeave={() => {
+                                  const tooltip = document.getElementById('remarks-tooltip');
+                                  if (tooltip) {
+                                    tooltip.remove();
+                                  }
+                                }}
+                                onMouseMove={(e) => {
+                                  const tooltip = document.getElementById('remarks-tooltip');
+                                  if (tooltip) {
+                                    const rect = e.currentTarget.getBoundingClientRect();
+                                    tooltip.style.left = `${rect.left + rect.width / 2}px`;
+                                    tooltip.style.top = `${rect.bottom + 8}px`;
+                                  }
+                                }}
+                              >
+                                {customer.비고}
                               </div>
-                            ) : (customer.사용자원 && typeof customer.사용자원 === 'string') ? (
-                              // 이전 데이터 호환성 (문자열로 저장된 경우)
-                              <span style={{ fontSize: "11px" }}>
-                                {resourceMap[customer.사용자원] || customer.사용자원}
-                                {customer.사용자원수량 && ` (${customer.사용자원수량}개)`}
-                              </span>
                             ) : "-"}
                           </td>
-                          <td style={{ padding: "6px 8px", fontSize: "11px", whiteSpace: "nowrap" }}>{customer.사용유형 || "-"}</td>
-                          <td style={{ padding: "6px 8px", fontSize: "11px", textAlign: "right" }}>{customer["견적/정산금액"] || "-"}</td>
-                          <td style={{ padding: "6px 8px", fontSize: "11px" }}>{customer.비고 || "-"}</td>
-                          <td style={{ padding: "6px 8px", fontSize: "11px", textAlign: "center" }}>{customer.업데이트날짜 || "-"}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "center", fontSize: "11px" }}>{customer.업데이트날짜 || "-"}</td>
                           <td style={{ padding: "6px 8px", textAlign: "center" }}>
-                            <div style={{ display: "flex", gap: "3px", justifyContent: "center" }}>
+                            <div style={{ display: "flex", gap: "4px", justifyContent: "center" }}>
                               <button
                                 onClick={() => {
                                   // 사용기간 문자열 파싱
@@ -5387,7 +6573,7 @@ function App() {
                                   backgroundColor: "#007bff",
                                   color: "white",
                                   border: "none",
-                                  borderRadius: "4px",
+                                  borderRadius: "3px",
                                   cursor: "pointer",
                                   fontSize: "10px"
                                 }}
@@ -5414,7 +6600,7 @@ function App() {
                                   backgroundColor: "#dc3545",
                                   color: "white",
                                   border: "none",
-                                  borderRadius: "4px",
+                                  borderRadius: "3px",
                                   cursor: "pointer",
                                   fontSize: "10px"
                                 }}
@@ -6024,38 +7210,64 @@ function App() {
                     <h3 style={{ fontSize: "16px", margin: 0, color: "#495057", fontWeight: "600" }}>
                       CRM 고객 목록 ({filteredCrmCustomers.length}건)
                     </h3>
-                    <button
-                      onClick={() => {
-                        const headers = [
-                          { key: "기관생성일", label: "기관생성일" },
-                          { key: "성함", label: "성함" },
-                          { key: "이메일", label: "이메일" },
-                          { key: "카드미등록발송일자", label: "카드미등록발송일자" },
-                          { key: "카드등록일", label: "카드등록일" },
-                          { key: "크레딧충전일", label: "크레딧충전일" },
-                          { key: "기관링크", label: "기관링크" },
-                          { key: "기관어드민링크", label: "기관어드민링크" }
-                        ];
-                        const csv = convertToCSV(filteredCrmCustomers, headers);
-                        const filename = `crm_customers_${new Date().toISOString().split('T')[0]}.csv`;
-                        downloadCSV(csv, filename);
-                      }}
-                      style={{
-                        padding: "8px 16px",
-                        backgroundColor: "#198754",
-                        color: "white",
-                        border: "none",
-                        borderRadius: "6px",
-                        cursor: "pointer",
-                        fontSize: "13px",
-                        fontWeight: "500",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "6px"
-                      }}
-                    >
-                      📥 CSV 다운로드
-                    </button>
+                    <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                      <label
+                        style={{
+                          padding: "8px 16px",
+                          backgroundColor: "#0d6efd",
+                          color: "white",
+                          border: "none",
+                          borderRadius: "6px",
+                          cursor: "pointer",
+                          fontSize: "13px",
+                          fontWeight: "500",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "6px"
+                        }}
+                      >
+                        📤 CSV 업로드
+                        <input
+                          type="file"
+                          accept=".csv"
+                          onChange={handleCrmCsvUpload}
+                          style={{ display: "none" }}
+                          disabled={loading}
+                        />
+                      </label>
+                      <button
+                        onClick={() => {
+                          const headers = [
+                            { key: "기관생성일", label: "기관생성일" },
+                            { key: "성함", label: "성함" },
+                            { key: "이메일", label: "이메일" },
+                            { key: "카드미등록발송일자", label: "카드미등록발송일자" },
+                            { key: "카드등록일", label: "카드등록일" },
+                            { key: "크레딧충전일", label: "크레딧충전일" },
+                            { key: "기관링크", label: "기관링크" },
+                            { key: "기관어드민링크", label: "기관어드민링크" }
+                          ];
+                          const csv = convertToCSV(filteredCrmCustomers, headers);
+                          const filename = `crm_customers_${new Date().toISOString().split('T')[0]}.csv`;
+                          downloadCSV(csv, filename);
+                        }}
+                        style={{
+                          padding: "8px 16px",
+                          backgroundColor: "#198754",
+                          color: "white",
+                          border: "none",
+                          borderRadius: "6px",
+                          cursor: "pointer",
+                          fontSize: "13px",
+                          fontWeight: "500",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "6px"
+                        }}
+                      >
+                        📥 CSV 다운로드
+                      </button>
+                    </div>
                   </div>
 
                   {filteredCrmCustomers.length === 0 ? (
