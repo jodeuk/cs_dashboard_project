@@ -21,6 +21,7 @@ const CloudCustomerTable = ({
   const 사용유형Options = ["전체", ...new Set(cloudCustomers.map(c => c.사용유형).filter(Boolean))];
   const 담당자Options = ["전체", "우지훈", "조용준", "안예은", "없음"];
   const 서비스유형Options = ["전체", ...new Set(cloudCustomers.map(c => c.서비스유형).filter(Boolean))];
+  const 사용자원Options = ["전체", "A100", "H100", "B200"];
 
   // 필터링된 고객 데이터 계산
   const search = (tableSearch || "").trim().toLowerCase();
@@ -31,10 +32,23 @@ const CloudCustomerTable = ({
     const 담당자Match = tableFilters.담당자 === "전체" || 
       (tableFilters.담당자 === "없음" ? (!customer.담당자 || customer.담당자.trim() === "") : customer.담당자 === tableFilters.담당자);
     const 서비스유형Match = tableFilters.서비스유형 === "전체" || customer.서비스유형 === tableFilters.서비스유형;
+    
+    // 사용자원 필터링
+    const 사용자원Match = tableFilters.사용자원 === "전체" || (() => {
+      if (!customer.사용자원) return false;
+      let resources = [];
+      if (Array.isArray(customer.사용자원) && customer.사용자원.length > 0) {
+        resources = customer.사용자원.map(item => item.resource);
+      } else if (typeof customer.사용자원 === 'string') {
+        resources = [customer.사용자원];
+      }
+      return resources.includes(tableFilters.사용자원);
+    })();
+    
     const fieldValue = ((customer?.[tableSearchField]) || "").toString().toLowerCase();
     const searchMatch = !search || fieldValue.includes(search);
     
-    return 사업유형Match && 세일즈단계Match && 사용유형Match && 담당자Match && 서비스유형Match && searchMatch;
+    return 사업유형Match && 세일즈단계Match && 사용유형Match && 담당자Match && 서비스유형Match && 사용자원Match && searchMatch;
   })
   .sort((a, b) => {
     const dateA = a.업데이트날짜 ? new Date(a.업데이트날짜) : new Date(0);
@@ -236,7 +250,27 @@ const CloudCustomerTable = ({
                 <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "60px" }}>문의날짜</th>
                 <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "60px" }}>계약날짜</th>
                 <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "130px" }}>사용기간</th>
-                <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "80px" }}>사용자원</th>
+                <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", width: "80px" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                    <span>사용자원</span>
+                    <select 
+                      value={tableFilters.사용자원}
+                      onChange={(e) => onTableFiltersChange({...tableFilters, 사용자원: e.target.value})}
+                      style={{ 
+                        fontSize: "9px", 
+                        padding: "1px 2px", 
+                        border: "1px solid #ccc", 
+                        borderRadius: "2px",
+                        backgroundColor: "white",
+                        width: "100%"
+                      }}
+                    >
+                      {사용자원Options.map(option => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                  </div>
+                </th>
                 <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "2px solid #dee2e6", fontWeight: "600", fontSize: "11px", whiteSpace: "nowrap", width: "75px" }}>
                   <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
                     <span>사용유형</span>

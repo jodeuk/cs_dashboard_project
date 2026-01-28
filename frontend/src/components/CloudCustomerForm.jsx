@@ -24,6 +24,7 @@ const CloudCustomerForm = ({
       문의날짜: "",
       계약날짜: "",
       세일즈단계: "",
+      서비스유형: "",
       사용자원: [],
       사용유형: "",
       사용기간시작일: "",
@@ -53,8 +54,14 @@ const CloudCustomerForm = ({
       
       const dataToSave = {
         ...formData,
-        사용기간: 사용기간
+        사용기간: 사용기간,
+        서비스유형: formData.서비스유형 || ""
       };
+      
+      // UI 전용 필드 제거 (DB에 저장하지 않음)
+      delete dataToSave.종료일없음;
+      delete dataToSave.사용기간시작일;
+      delete dataToSave.사용기간종료일;
       
       if (editingIndex !== null) {
         // 수정 - DB에 저장 (editingIndex에는 id를 저장)
@@ -290,6 +297,28 @@ const CloudCustomerForm = ({
             <option value="계약">계약</option>
             <option value="정산">정산</option>
             <option value="수주실패">수주실패</option>
+          </select>
+        </div>
+        
+        <div>
+          <label style={{ display: "block", marginBottom: "4px", fontSize: "14px", fontWeight: "500" }}>
+            서비스유형
+          </label>
+          <select
+            value={formData.서비스유형}
+            onChange={(e) => onFormDataChange({ ...formData, 서비스유형: e.target.value })}
+            style={{
+              width: "100%",
+              padding: "8px",
+              border: "1px solid #ced4da",
+              borderRadius: "4px",
+              fontSize: "14px",
+              backgroundColor: "white"
+            }}
+          >
+            <option value="">선택해주세요</option>
+            <option value="ECI">ECI</option>
+            <option value="Runbox">Runbox</option>
           </select>
         </div>
         

@@ -338,7 +338,8 @@ function App() {
     세일즈단계: "전체", 
     사용유형: "전체",
     담당자: "전체",
-    서비스유형: "전체"
+    서비스유형: "전체",
+    사용자원: "전체"
   });
   const [tableSearch, setTableSearch] = useState("");
   const [tableSearchField, setTableSearchField] = useState("이름");
@@ -352,6 +353,7 @@ function App() {
     문의날짜: "",
     계약날짜: "",
     세일즈단계: "",
+    서비스유형: "",
     사용자원: [],  // 배열로 변경: [{resource: string, quantity: number}]
     사용유형: "",
     사용기간시작일: "",
@@ -2598,10 +2600,9 @@ function App() {
     return result;
   }, [filteredRows]);
 
-  // ✅ 서비스유형/문의유형/문의유형(세부) 테이블 데이터 (필터 없이 전체 캐시 데이터 사용)
+  // ✅ 서비스유형/문의유형/문의유형(세부) 테이블 데이터 (기간·패널 필터 적용된 filteredRows 사용)
   const serviceInquiryTableData = useMemo(() => {
-    // tableDataCache 사용 (필터 없이 전체 캐시 데이터)
-    const allData = Array.isArray(tableDataCache) ? tableDataCache : [];
+    const allData = Array.isArray(filteredRows) ? filteredRows : [];
     if (allData.length === 0) return [];
 
     const counts = {};
@@ -2678,7 +2679,7 @@ function App() {
       ...item,
       비율: total > 0 ? ((item.문의량 / total) * 100).toFixed(2) : "0.00",
     }));
-  }, [tableDataCache]);
+  }, [filteredRows]);
 
   // ✅ 테이블 필터 옵션 생성
   const tableFilterOptions = useMemo(() => {
@@ -4201,7 +4202,8 @@ function App() {
                   사용자원,
                   사용기간시작일,
                   사용기간종료일,
-                  종료일없음
+                  종료일없음,
+                  서비스유형: customer.서비스유형 || ""
                 });
                 setCloudEditingIndex(id);
                 window.scrollTo({ top: 0, behavior: "smooth" });

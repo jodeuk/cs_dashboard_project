@@ -1345,6 +1345,7 @@ async def create_cloud_customer(customer: dict):
             "문의날짜": customer.get("문의날짜", ""),
             "계약날짜": customer.get("계약날짜", ""),
             "세일즈단계": customer.get("세일즈단계", ""),
+            "서비스유형": customer.get("서비스유형", ""),
             "사용자원": customer.get("사용자원", ""),
             "사용자원수량": customer.get("사용자원수량", ""),
             "사용유형": customer.get("사용유형", ""),
@@ -1377,7 +1378,7 @@ async def update_cloud_customer(customer_id: int, customer: dict):
         # 담당자 필드를 제외한 다른 필드가 변경되었는지 확인
         fields_to_check = [
             "사업유형", "이름", "기관", "기관페이지링크", "이메일", 
-            "문의날짜", "계약날짜", "세일즈단계", "사용자원", "사용자원수량",
+            "문의날짜", "계약날짜", "세일즈단계", "서비스유형", "사용자원", "사용자원수량",
             "사용유형", "사용기간", "견적/정산금액", "비고"
         ]
         
@@ -1410,6 +1411,7 @@ async def update_cloud_customer(customer_id: int, customer: dict):
             "문의날짜": customer.get("문의날짜", ""),
             "계약날짜": customer.get("계약날짜", ""),
             "세일즈단계": customer.get("세일즈단계", ""),
+            "서비스유형": customer.get("서비스유형", ""),
             "사용자원": customer.get("사용자원", ""),
             "사용자원수량": customer.get("사용자원수량", ""),
             "사용유형": customer.get("사용유형", ""),
