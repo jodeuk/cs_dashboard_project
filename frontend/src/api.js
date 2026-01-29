@@ -203,6 +203,9 @@ export function clearCache() {
 export function refreshCache(start, end, force = true, include_csat = false) {
   return apiCall("get", "/cache/refresh", { start, end, force, include_csat });
 }
+export function refreshCsatOnly(start, end) {
+  return apiCall("post", "/csat/refresh", { start, end });
+}
 export function fetchManagerStats(start, end) {
   return apiCall("get", "/manager-stats", { start, end });
 }
